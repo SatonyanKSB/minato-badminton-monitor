@@ -9,85 +9,83 @@ with sync_playwright() as p:
     print("サイトを開いています...")
     page.goto(URL, wait_until="networkidle", timeout=60000)
 
-    # 初期画面
-    page.screenshot(path="01_initial.png", full_page=True)
+    # 1か月
+    page.locator("#days").select_option("31")
 
-    lines = []
+    # 芝地区（すべて）
+    page.locator("#bname").select_option("5000_0")
 
-    lines.append("===== PAGE =====")
-    lines.append(f"TITLE: {page.title()}")
-    lines.append(f"URL: {page.url}")
-    lines.append("")
+    # バドミントン
+    page.locator("#purpose").select_option("2010_2010040")
 
-    lines.append("===== SELECTS =====")
+    # 時間帯は選択しない
+    # → 全時間帯を検索
 
-    selects = page.locator("select")
-    lines.append(f"SELECT COUNT: {selects.count()}")
+    print("検索条件を設定しました")
+    print("地区：芝地区（すべて）")
+    print("目的：バドミントン")
+    print("期間：1か月")
+    print("時間帯：指定なし")
 
-    for i in range(selects.count()):
-        select = selects.nth(i)
+    # 検索
+    page.locator("#btn-go").click()
 
-        lines.append("")
-        lines.append(f"--- SELECT {i} ---")
-        lines.append(f"name={select.get_attribute('name')}")
-        lines.append(f"id={select.get_attribute('id')}")
+    # 検索結果の読み込みを待つ
+    page.wait_for_timeout(5000)
 
-        options = select.locator("option")
+    try:
+        page.wait_for_load_state("networkidle", timeout=30000)
+    except:
+        pass
 
-        for j in range(options.count()):
-            option = options.nth(j)
+    print("")
+    print("===== SEARCH RESULT =====")
+    print("TITLE:", page.title())
+    print("URL:", page.url)
 
-            lines.append(
-                f"OPTION {j}: "
-                f"value={option.get_attribute('value')} "
-                f"text={option.inner_text().strip()}"
-            )
+    # 画面全体を保存
+    page.screenshot(
+        path="search-result.png",
+        full_page=True
+    )
 
-    lines.append("")
-    lines.append("===== BUTTONS / INPUTS =====")
+    # HTMLを保存
+    with open("search-result.html", "w", encoding="utf-8") as f:
+        f.write(page.content())
 
-    elements = page.locator("button, input")
+    # 画面に表示されている文字を取得
+    text = page.locator("body").inner_text()
 
-    lines.append(f"ELEMENT COUNT: {elements.count()}")
+    with open("search-result.txt", "w", encoding="utf-8") as f:
+        f.write(text)
+
+    print("")
+    print("===== 画面に表示された文字 =====")
+    print(text[:20000])
+
+    print("")
+    print("===== 予約という文字を含む要素 =====")
+
+    elements = page.get_by_text("予約", exact=True)
+
+    print("予約要素数:", elements.count())
 
     for i in range(elements.count()):
         el = elements.nth(i)
 
         try:
-            text = el.inner_text().strip()
-        except:
-            text = ""
+            print(
+                i,
+                "tag=", el.evaluate("(e) => e.tagName"),
+                "text=", el.inner_text(),
+                "href=", el.get_attribute("href"),
+                "id=", el.get_attribute("id"),
+                "class=", el.get_attribute("class"),
+            )
+        except Exception as e:
+            print(i, "取得失敗:", e)
 
-        lines.append(
-            f"ELEMENT {i}: "
-            f"tag={el.evaluate('(e) => e.tagName')} "
-            f"type={el.get_attribute('type')} "
-            f"name={el.get_attribute('name')} "
-            f"id={el.get_attribute('id')} "
-            f"value={el.get_attribute('value')} "
-            f"text={text}"
-        )
-
-    # 「1か月」をクリックできるか確認
-    lines.append("")
-    lines.append("===== 1 MONTH TEST =====")
-
-    one_month = page.get_by_text("1か月", exact=True)
-
-    lines.append(f"1か月 elements: {one_month.count()}")
-
-    if one_month.count() > 0:
-        one_month.first.click()
-        page.wait_for_timeout(1000)
-        lines.append("1か月: CLICKED")
-        page.screenshot(path="02_one_month.png", full_page=True)
-    else:
-        lines.append("1か月: NOT FOUND")
-
-    # 調査結果をファイルに保存
-    with open("diagnostics.txt", "w", encoding="utf-8") as f:
-        f.write("\n".join(lines))
-
-    print("\n".join(lines))
+    print("")
+    print("===== TEST COMPLETE =====")
 
     browser.close()
