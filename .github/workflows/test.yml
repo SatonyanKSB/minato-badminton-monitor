@@ -39,3 +39,27 @@ jobs:
           name: diagnostics
           path: diagnostics.txt
           if-no-files-found: ignore   
+
+                - name: Upload search result screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: search-result-screenshot
+          path: search-result.png
+          if-no-files-found: ignore
+
+      - name: Upload search result text
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: search-result-text
+          path: search-result.txt
+          if-no-files-found: ignore
+
+      - name: Upload search result HTML
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: search-result-html
+          path: search-result.html
+          if-no-files-found: ignore
