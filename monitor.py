@@ -1,4 +1,4 @@
- from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright
 
 URL = "https://web101.rsv.ws-scs.jp/web/index.jsp"
 
