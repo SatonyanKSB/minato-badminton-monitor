@@ -38,7 +38,7 @@ jobs:
         with:
           name: diagnostics
           path: diagnostics.txt
-          if-no-files-found: ignore   
+          if-no-files-found: ignore
 
       - name: Upload search result screenshot
         if: always()
