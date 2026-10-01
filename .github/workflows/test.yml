@@ -25,6 +25,8 @@ jobs:
           python -m playwright install --with-deps chromium
 
       - name: Run monitor
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: python monitor.py
 
       - name: Show generated files
