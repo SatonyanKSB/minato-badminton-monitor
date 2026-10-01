@@ -1,6 +1,6 @@
 from playwright.sync_api import sync_playwright
 from pathlib import Path
-import time
+import re
 
 
 URL = "https://web101.rsv.ws-scs.jp/web/index.jsp"
@@ -17,7 +17,7 @@ PURPOSE = "2010_2010040"  # バドミントン
 
 
 def get_all_results(page, district_name):
-    """検索結果を「さらに表示」がなくなるまで取得する"""
+    """「さらに表示」がなくなるまで検索結果を取得する"""
 
     print(f"\n===== {district_name} =====")
 
@@ -29,22 +29,20 @@ def get_all_results(page, district_name):
     except Exception as e:
         print(f"日付順への切り替えに失敗: {e}")
 
-    # 最初の表示内容
     previous_text = ""
     click_count = 0
 
     # 「さらに表示」を最大50回まで押す
     for i in range(50):
+
         body_text = page.locator("body").inner_text()
 
-        # 同じ内容なら終了
         if body_text == previous_text:
             print("画面内容に変化がないため終了します")
             break
 
         previous_text = body_text
 
-        # 「さらに表示」を探す
         more = page.get_by_text("さらに表示", exact=True)
 
         try:
@@ -56,7 +54,6 @@ def get_all_results(page, district_name):
             print("「さらに表示」はありません")
             break
 
-        # 表示されている「さらに表示」を探す
         clicked = False
 
         for j in range(count):
@@ -64,7 +61,11 @@ def get_all_results(page, district_name):
                 item = more.nth(j)
 
                 if item.is_visible():
-                    print(f"「さらに表示」をクリック ({click_count + 1}回目)")
+                    print(
+                        f"「さらに表示」をクリック "
+                        f"({click_count + 1}回目)"
+                    )
+
                     item.click()
                     page.wait_for_timeout(1200)
 
@@ -79,31 +80,133 @@ def get_all_results(page, district_name):
             print("クリックできる「さらに表示」がありません")
             break
 
-    print(f"「さらに表示」のクリック回数: {click_count}")
+    print(
+        f"「さらに表示」のクリック回数: "
+        f"{click_count}"
+    )
 
-    # 最終的に表示されている全文を取得
-    final_text = page.locator("body").inner_text()
+    return page.locator("body").inner_text()
 
-    return final_text
+
+def extract_evening_slots(text, district_name):
+    """
+    検索結果から、開始時刻が17:00以降の枠だけを抽出する。
+    """
+
+    results = []
+
+    current_date = ""
+    last_nonempty_line = ""
+
+    lines = text.splitlines()
+
+    for line in lines:
+
+        line = line.strip()
+
+        if not line:
+            continue
+
+        # 日付を取得
+        date_match = re.search(
+            r"(\d{1,2}月\d{1,2}日\([^)]*\)\d{4}年)",
+            line
+        )
+
+        if date_match:
+            current_date = date_match.group(1)
+
+        # 時間帯を取得
+        time_match = re.search(
+            r"(\d{1,2})時(\d{2})分"
+            r"[～~\-]"
+            r"(\d{1,2})時(\d{2})分",
+            line
+        )
+
+        if time_match:
+
+            start_hour = int(time_match.group(1))
+            start_minute = int(time_match.group(2))
+
+            end_hour = int(time_match.group(3))
+            end_minute = int(time_match.group(4))
+
+            # 開始時刻を分に変換
+            start_total = (
+                start_hour * 60
+                + start_minute
+            )
+
+            # 17:00 = 1020分
+            if start_total >= 17 * 60:
+
+                # 時間の直前に出ている
+                # 「館 + 施設」の行を取得
+                facility_line = last_nonempty_line
+
+                # ヘッダー等を除外
+                if facility_line in [
+                    "館 施設 時間帯 予約",
+                    "館\t施設\t時間帯\t予約",
+                    "予約",
+                ]:
+                    facility_line = ""
+
+                results.append(
+                    {
+                        "district": district_name,
+                        "date": current_date,
+                        "facility": facility_line,
+                        "start": (
+                            f"{start_hour:02d}:"
+                            f"{start_minute:02d}"
+                        ),
+                        "end": (
+                            f"{end_hour:02d}:"
+                            f"{end_minute:02d}"
+                        ),
+                    }
+                )
+
+        last_nonempty_line = line
+
+    return results
 
 
 with sync_playwright() as p:
 
-    browser = p.chromium.launch(headless=True)
+    browser = p.chromium.launch(
+        headless=True
+    )
 
     page = browser.new_page(
-        viewport={"width": 1280, "height": 1600}
+        viewport={
+            "width": 1280,
+            "height": 1600
+        }
     )
 
     all_results = []
+    evening_results = []
 
     for district_name, district_value in DISTRICTS:
 
-        print(f"\n\n######## {district_name} ########")
+        print(
+            f"\n\n######## "
+            f"{district_name} "
+            f"########"
+        )
 
         try:
-            # 公式サイトを開く
-            page.goto(URL, wait_until="domcontentloaded", timeout=60000)
+
+            # 公式サイト
+            page.goto(
+                URL,
+                wait_until="domcontentloaded",
+                timeout=60000
+            )
+
             page.wait_for_timeout(1500)
 
             # 期間：1か月
@@ -143,15 +246,42 @@ with sync_playwright() as p:
 
             page.wait_for_timeout(2500)
 
-            # 「さらに表示」を全部処理
+            # すべての検索結果を取得
             result_text = get_all_results(
                 page,
                 district_name
             )
 
-            # 画面全体のスクリーンショット
+            # 全検索結果を保存
+            all_results.append(
+                f"\n\n"
+                f"==============================\n"
+                f"{district_name}\n"
+                f"==============================\n\n"
+                f"{result_text}"
+            )
+
+            # 17:00以降だけ抽出
+            district_evening = extract_evening_slots(
+                result_text,
+                district_name
+            )
+
+            evening_results.extend(
+                district_evening
+            )
+
+            print(
+                f"{district_name}: "
+                f"17:00以降の枠 "
+                f"{len(district_evening)}件"
+            )
+
+            # スクリーンショット
             screenshot_name = (
-                f"result_{district_name.replace('地区', '')}.png"
+                "result_"
+                + district_name.replace("地区", "")
+                + ".png"
             )
 
             page.screenshot(
@@ -159,52 +289,101 @@ with sync_playwright() as p:
                 full_page=True
             )
 
-            # 地区ごとのテキスト保存
-            text_name = (
-                f"result_{district_name.replace('地区', '')}.txt"
-            )
-
-            Path(text_name).write_text(
-                result_text,
-                encoding="utf-8"
-            )
-
-            # 全地区まとめ
-            all_results.append(
-                f"\n\n==============================\n"
-                f"{district_name}\n"
-                f"==============================\n\n"
-                f"{result_text}"
-            )
-
-            print(
-                f"{district_name}: "
-                f"{len(result_text)}文字取得"
-            )
-
         except Exception as e:
 
             print(
-                f"{district_name} の処理でエラー: {e}"
+                f"{district_name} の処理でエラー: "
+                f"{e}"
             )
 
-            # エラー時もスクリーンショットを残す
             try:
                 page.screenshot(
-                    path=f"error_{district_name}.png",
+                    path=(
+                        "error_"
+                        + district_name
+                        + ".png"
+                    ),
                     full_page=True
                 )
             except Exception:
                 pass
 
-    # 全地区まとめファイル
-    Path("all-district-results.txt").write_text(
+    # ---------------------------------
+    # 全検索結果
+    # ---------------------------------
+
+    Path(
+        "all-district-results.txt"
+    ).write_text(
         "".join(all_results),
         encoding="utf-8"
     )
 
-    print("\n==============================")
+    # ---------------------------------
+    # 17:00以降の結果
+    # ---------------------------------
+
+    evening_lines = []
+
+    evening_lines.append(
+        "========================================\n"
+    )
+
+    evening_lines.append(
+        "17:00以降開始の空き枠\n"
+    )
+
+    evening_lines.append(
+        "========================================\n\n"
+    )
+
+    if not evening_results:
+
+        evening_lines.append(
+            "現在、17:00以降開始の空き枠は "
+            "見つかりませんでした。\n"
+        )
+
+    else:
+
+        for item in evening_results:
+
+            evening_lines.append(
+                f"地区: {item['district']}\n"
+            )
+
+            evening_lines.append(
+                f"日付: {item['date']}\n"
+            )
+
+            evening_lines.append(
+                f"施設: {item['facility']}\n"
+            )
+
+            evening_lines.append(
+                f"時間: "
+                f"{item['start']}"
+                f"～"
+                f"{item['end']}\n"
+            )
+
+            evening_lines.append(
+                "----------------------------------------\n"
+            )
+
+    Path(
+        "evening-results.txt"
+    ).write_text(
+        "".join(evening_lines),
+        encoding="utf-8"
+    )
+
+    print("\n================================")
     print("5地区の検索が完了しました")
-    print("==============================")
+    print(
+        "17:00以降開始の枠: "
+        f"{len(evening_results)}件"
+    )
+    print("================================")
 
     browser.close()
