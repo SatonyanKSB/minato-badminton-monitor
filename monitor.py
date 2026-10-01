@@ -268,69 +268,79 @@ DATE_RE = re.compile(r"^(\d{1,2})月(\d{1,2})日")
 
 def parse_available_rows(body_text, district):
     """
-    検索結果の本文から、
-      日付 / 館 / 施設 / 時間帯
-    を抽出する。
+    検索結果のHTML本文から、日付・館・施設・時間帯を抽出する。
 
-    実際の検索結果は概ね次の構造になっている：
-      10月7日(水曜)2026年
-      館 施設 時間帯 予約
-      スポーツセンター
-      アリーナ半面Ａ
-      09時00分～11時00分
-      ...
+    このサイトでは、実際の検索結果が
+        スポーツセンター\tアリーナ半面Ａ
+        09時00分～11時00分
+    のように「館」と「施設」が同じ行にタブ区切りで入る。
+    そのため、単純に改行だけで分割せず、タブ区切りを優先して解析する。
     """
     raw_lines = body_text.replace("\r", "\n").split("\n")
-    lines = [normalize_text(x) for x in raw_lines]
-    lines = [x for x in lines if x]
+    lines = [x.replace("\u3000", " ").replace("\xa0", " ").strip() for x in raw_lines]
 
     results = []
     current_date = None
 
-    # 時間帯の正規表現
-    time_re = re.compile(
-        r"^(\d{1,2})時(\d{2})分～(\d{1,2})時(\d{2})分$"
-    )
+    date_re = re.compile(r"^(\d{1,2})月(\d{1,2})日")
+    time_re = re.compile(r"^(\d{1,2})時(\d{2})分～(\d{1,2})時(\d{2})分$")
+
+    bad = {
+        "しせつよやく", "ログイン", "ホーム", "予約", "抽選",
+        "利用者", "その他", "空き状況", "ヘルプ", "指定条件",
+        "条件変更", "施設ごと", "日付順", "館", "施設", "時間帯",
+        "すべて開く", "すべて閉じる",
+    }
 
     for i, line in enumerate(lines):
-        # 日付を更新
-        m = DATE_RE.match(line)
+        if not line:
+            continue
+
+        # 日付行
+        m = date_re.match(line)
         if m:
             current_date = f"{m.group(1)}月{m.group(2)}日"
             continue
 
-        tm = time_re.match(line)
-        if not tm or current_date is None:
+        if current_date is None:
             continue
 
-        # 時間帯の直前2つの意味のある行が「館」「施設」。
-        # 途中にグラフ用の文字が入っているケースを避けるため、
-        # 直前から上へ探す。
-        previous = lines[max(0, i - 6):i]
+        # 「館\t施設」のデータ行を探し、その直後の時間帯を対応させる。
+        # 実際のinner_textではタブが残るため、ここを直接利用する。
+        if "\t" not in line:
+            continue
 
-        # 最後から探して「予約」「時間帯」等の見出しを除外
-        candidates = []
-        for x in reversed(previous):
-            if x in {"予約", "館", "施設", "時間帯", "すべて開く", "すべて閉じる"}:
+        parts = [normalize_text(x) for x in line.split("\t") if normalize_text(x)]
+        if len(parts) < 2:
+            continue
+
+        # 見出し行は除外
+        if parts[0] in bad or parts[1] in bad:
+            continue
+
+        # 次の意味のある行が時間帯
+        time_line = None
+        for j in range(i + 1, min(i + 4, len(lines))):
+            candidate = normalize_text(lines[j])
+            if not candidate:
                 continue
-            if x.startswith("0") and "6" in x and "12" in x and "18" in x and "24" in x:
-                continue
-            candidates.append(x)
+            tm = time_re.match(candidate)
+            if tm:
+                time_line = candidate
+                break
+            # 時間帯以外の通常テキストが先に来たら、この行は対象外
+            if candidate not in {"予約"}:
+                break
 
-        if len(candidates) < 2:
+        if not time_line:
             continue
 
-        facility = candidates[0]
-        hall = candidates[1]
-
-        # ヘッダーやページ上部の文字を誤認しないための除外
-        bad = {
-            "しせつよやく", "ログイン", "ホーム", "予約", "抽選",
-            "利用者", "その他", "空き状況", "ヘルプ", "指定条件",
-            "条件変更", "施設ごと", "日付順",
-        }
-        if hall in bad or facility in bad:
+        tm = time_re.match(time_line)
+        if not tm:
             continue
+
+        hall = parts[0]
+        facility = parts[1]
 
         start_h = int(tm.group(1))
         start_m = int(tm.group(2))
@@ -353,13 +363,8 @@ def parse_available_rows(body_text, district):
             "start_minutes": start_h * 60 + start_m,
         })
 
-    # 同じ行を二重取得しない
-    unique = {}
-    for row in results:
-        unique[row["key"]] = row
-
+    unique = {row["key"]: row for row in results}
     return list(unique.values())
-
 
 def format_slot(row):
     return (
