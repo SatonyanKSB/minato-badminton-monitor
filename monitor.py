@@ -1,33 +1,26 @@
 import os
 import urllib.request
+import urllib.error
 import json
 
 
 def main():
 
     print("========================================")
-    print("Discord接続テスト開始")
+    print("Discord接続テスト")
     print("========================================")
 
     webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
 
-    # URLそのものは絶対に表示しない
-    if webhook_url:
-        print("DISCORD_WEBHOOK_URL: 読み込み成功")
-        print(f"URLの長さ: {len(webhook_url)}文字")
-        print(f"URLの先頭: {webhook_url[:20]}...")
-    else:
+    if not webhook_url:
         print("DISCORD_WEBHOOK_URL: 読み込み失敗")
-        print("GitHub ActionsからSecretを取得できていません。")
         return
 
-    # Discordへテストメッセージを送信
+    print("DISCORD_WEBHOOK_URL: 読み込み成功")
+    print(f"URLの長さ: {len(webhook_url)}文字")
+
     message = {
-        "content": (
-            "🏸 **港区バドミントン監視システム**\n"
-            "Discord通知テストです。\n"
-            "このメッセージが届けばDiscord連携成功です。"
-        )
+        "content": "🏸 港区バドミントン監視システム Discord接続テストです。"
     }
 
     data = json.dumps(message).encode("utf-8")
@@ -36,7 +29,8 @@ def main():
         webhook_url,
         data=data,
         headers={
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "User-Agent": "Minato-Badminton-Monitor"
         },
         method="POST"
     )
@@ -49,22 +43,39 @@ def main():
         ) as response:
 
             print("")
-            print("Discordへの送信結果:")
+            print("送信成功")
             print(f"HTTPステータス: {response.status}")
 
-            if response.status in (200, 204):
-                print("========================================")
-                print("Discord通知成功")
-                print("========================================")
-            else:
-                print("Discordから予期しないステータスが返りました。")
+            body = response.read().decode(
+                "utf-8",
+                errors="replace"
+            )
+
+            print(f"レスポンス: {body}")
+
+    except urllib.error.HTTPError as e:
+
+        print("")
+        print("========================================")
+        print("Discordからエラーが返りました")
+        print("========================================")
+
+        print(f"HTTPステータス: {e.code}")
+
+        error_body = e.read().decode(
+            "utf-8",
+            errors="replace"
+        )
+
+        print(f"Discordのエラー本文: {error_body}")
 
     except Exception as e:
 
         print("")
         print("========================================")
-        print("Discord通知に失敗しました")
+        print("通信エラー")
         print("========================================")
+
         print(f"エラー種類: {type(e).__name__}")
         print(f"エラー内容: {e}")
 
