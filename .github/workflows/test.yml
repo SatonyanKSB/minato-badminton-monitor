@@ -1,10 +1,10 @@
-name: Test monitor
+name: Discord connection test
 
 on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   test:
@@ -19,56 +19,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-          python -m playwright install --with-deps chromium
-
-      - name: Run monitor
+      - name: Run Discord test
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: python monitor.py
-
-      - name: Show generated files
-        if: always()
-        run: |
-          echo "===== files ====="
-          ls -la
-          echo ""
-          echo "===== new-slots.txt ====="
-          cat new-slots.txt || true
-          echo ""
-          echo "===== evening-results.txt ====="
-          cat evening-results.txt || true
-          echo ""
-          echo "===== state.json ====="
-          cat state.json || true
-
-      - name: Commit state.json
-        if: success()
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          git add state.json
-
-          if git diff --cached --quiet; then
-            echo "state.jsonに変更はありません"
-          else
-            git commit -m "Update monitor state"
-            git push
-          fi
-
-      - name: Upload test files
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-results
-          path: |
-            result_*.png
-            all-district-results.txt
-            evening-results.txt
-            new-slots.txt
-            state.json
-            error_*.png
-          if-no-files-found: warn
