@@ -1,1192 +1,532 @@
 import os
 import json
 import re
-import urllib.request
-import urllib.error
-from playwright.sync_api import sync_playwright
+import time
+from datetime import datetime
+from urllib.request import Request, urlopen
 
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
-# =========================================================
-# 設定
-# =========================================================
 
 URL = "https://web101.rsv.ws-scs.jp/web/index.jsp"
 
-DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
-
-STATE_FILE = "state.json"
-
 DISTRICTS = [
-    ("麻布地区", "1000_0"),
-    ("赤坂地区", "2000_0"),
-    ("芝地区", "5000_0"),
-    ("高輪地区", "3000_0"),
-    ("芝浦港南地区", "4000_0"),
+    "麻布地区",
+    "赤坂地区",
+    "芝地区",
+    "高輪地区",
+    "芝浦港南地区",
 ]
 
+STATE_FILE = "state.json"
+NEW_FILE = "new-slots.txt"
+EVENING_FILE = "evening-results.txt"
 
-# =========================================================
-# Discord通知
-# =========================================================
-
-def send_discord_notification(new_slots):
-
-    if not DISCORD_WEBHOOK_URL:
-        print("DISCORD_WEBHOOK_URL が設定されていません。")
-        return
-
-    if not new_slots:
-        print("新しい空き枠がないためDiscord通知はしません。")
-        return
-
-    lines = [
-        "🏸 **港区バドミントン空き情報**",
-        "",
-        f"17:00以降開始の新しい空き枠が {len(new_slots)} 件あります。",
-        "",
-    ]
-
-    for slot in new_slots:
-
-        lines.append(f"📅 {slot['date']}")
-        lines.append(f"📍 {slot['district']}")
-        lines.append(f"🏢 {slot['facility']}")
-        lines.append(f"🏸 {slot['room']}")
-        lines.append(f"⏰ {slot['start']}〜{slot['end']}")
-        lines.append("")
-
-    message = "\n".join(lines)
-
-    payload = json.dumps({
-        "content": message
-    }).encode("utf-8")
-
-    request = urllib.request.Request(
-        DISCORD_WEBHOOK_URL,
-        data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "User-Agent": "Minato-Badminton-Monitor"
-        },
-        method="POST"
-    )
-
-    try:
-
-        with urllib.request.urlopen(
-            request,
-            timeout=20
-        ) as response:
-
-            print(
-                f"Discord通知成功: HTTP {response.status}"
-            )
-
-    except urllib.error.HTTPError as e:
-
-        print(
-            f"Discord通知失敗: HTTP {e.code}"
-        )
-
-        try:
-
-            body = e.read().decode(
-                "utf-8",
-                errors="replace"
-            )
-
-            print(
-                f"Discordエラー内容: {body}"
-            )
-
-        except Exception:
-            pass
-
-    except Exception as e:
-
-        print(
-            f"Discord通知に失敗しました: {e}"
-        )
+# 17:00ちょうどを含め、それ以降に「開始」する枠だけ通知対象
+START_HOUR = 17
 
 
-# =========================================================
-# state.json
-# =========================================================
+def normalize_text(text):
+    """全角スペース等を整理し、比較しやすくする。"""
+    text = text.replace("\u3000", " ")
+    text = text.replace("\xa0", " ")
+    return re.sub(r"[ \t]+", " ", text).strip()
 
-def load_previous_state():
 
+def load_state():
     if not os.path.exists(STATE_FILE):
-
-        print(
-            "state.json がありません。初回実行です。"
-        )
-
         return set()
 
     try:
-
-        with open(
-            STATE_FILE,
-            "r",
-            encoding="utf-8"
-        ) as f:
-
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-
-        return set(data)
-
+        if isinstance(data, list):
+            return set(str(x) for x in data)
     except Exception as e:
+        print(f"state.json読み込みエラー: {e}")
 
-        print(
-            f"state.json の読み込みに失敗しました: {e}"
-        )
-
-        return set()
+    return set()
 
 
-def save_current_state(current_keys):
-
-    with open(
-        STATE_FILE,
-        "w",
-        encoding="utf-8"
-    ) as f:
-
-        json.dump(
-            sorted(current_keys),
-            f,
-            ensure_ascii=False,
-            indent=2
-        )
+def save_state(state):
+    tmp = STATE_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(sorted(state), f, ensure_ascii=False, indent=2)
+    os.replace(tmp, STATE_FILE)
 
 
-# =========================================================
-# 空き枠キー
-# =========================================================
+def send_discord(message):
+    webhook = os.environ.get("DISCORD_WEBHOOK_URL")
 
-def make_slot_key(slot):
+    if not webhook:
+        print("DISCORD_WEBHOOK_URLが設定されていないためDiscord通知をスキップします。")
+        return False
 
-    return "|".join([
-        slot["district"],
-        slot["date"],
-        slot["facility"],
-        slot["room"],
-        slot["start"],
-        slot["end"],
-    ])
-
-
-# =========================================================
-# 17:00以降か
-# =========================================================
-
-def is_evening_slot(start_time):
-
-    hour, minute = map(
-        int,
-        start_time.split(":")
+    payload = json.dumps({"content": message}, ensure_ascii=False).encode("utf-8")
+    req = Request(
+        webhook,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
     )
 
-    return (
-        hour * 60 + minute
-        >= 17 * 60
-    )
+    try:
+        with urlopen(req, timeout=20) as response:
+            print(f"Discord送信成功: HTTP {response.status}")
+            return 200 <= response.status < 300
+    except Exception as e:
+        print(f"Discord送信エラー: {e}")
+        return False
 
 
-# =========================================================
-# バドミントンを選択
-# =========================================================
-
-def select_badminton(page):
-
-    print(
-        "バドミントンの選択を開始します。"
-    )
-
-    # -----------------------------------------------------
-    # 方法1：selectのoptionから「バドミントン」を探す
-    # -----------------------------------------------------
-
+def select_district(page, district):
+    """地区のselectを見つけ、指定地区を選択する。"""
     selects = page.locator("select")
+    count = selects.count()
 
-    print(
-        f"select要素数: {selects.count()}"
-    )
-
-    for i in range(selects.count()):
-
+    # まず、地区名をoptionとして持っているselectを探す
+    for i in range(count):
         select = selects.nth(i)
-
         try:
-
-            options = select.locator("option")
-
-            for j in range(options.count()):
-
-                option = options.nth(j)
-
-                text = option.inner_text().strip()
+            options = select.locator("option").all_text_contents()
+            if any(district in normalize_text(x) for x in options):
+                option = select.locator("option").filter(has_text=district).first
                 value = option.get_attribute("value")
-
-                if text == "バドミントン":
-
-                    print(
-                        f"バドミントンをselectから発見: "
-                        f"select={i}, value={value}"
-                    )
-
-                    select.select_option(
-                        value=value
-                    )
-
-                    page.wait_for_timeout(500)
-
-                    print(
-                        "バドミントン選択成功"
-                    )
-
-                    return True
-
+                if value:
+                    select.select_option(value=value)
+                else:
+                    select.select_option(label=district)
+                page.wait_for_timeout(800)
+                print(f"地区設定成功: {district}")
+                return
         except Exception:
-            pass
-
-    # -----------------------------------------------------
-    # 方法2：optionに「バドミントン」を含むものを探す
-    # -----------------------------------------------------
-
-    try:
-
-        badminton_options = page.locator(
-            "option"
-        ).filter(
-            has_text="バドミントン"
-        )
-
-        if badminton_options.count() > 0:
-
-            option = badminton_options.first
-
-            value = option.get_attribute(
-                "value"
-            )
-
-            parent = option.locator(
-                "xpath=.."
-            )
-
-            print(
-                f"バドミントンoption発見: value={value}"
-            )
-
-            parent.select_option(
-                value=value
-            )
-
-            page.wait_for_timeout(500)
-
-            print(
-                "バドミントン選択成功"
-            )
-
-            return True
-
-    except Exception as e:
-
-        print(
-            f"option方式エラー: {e}"
-        )
-
-    # -----------------------------------------------------
-    # 方法3：labelから探す
-    # -----------------------------------------------------
-
-    try:
-
-        labels = page.locator(
-            "label"
-        )
-
-        for i in range(labels.count()):
-
-            label = labels.nth(i)
-
-            text = label.inner_text().strip()
-
-            if text == "バドミントン":
-
-                print(
-                    "バドミントンをlabelから発見"
-                )
-
-                label.click()
-
-                page.wait_for_timeout(500)
-
-                print(
-                    "バドミントン選択成功"
-                )
-
-                return True
-
-    except Exception as e:
-
-        print(
-            f"label方式エラー: {e}"
-        )
-
-    # -----------------------------------------------------
-    # 方法4：inputのvalueを探す
-    # -----------------------------------------------------
-
-    try:
-
-        inputs = page.locator(
-            "input"
-        )
-
-        for i in range(inputs.count()):
-
-            element = inputs.nth(i)
-
-            value = element.get_attribute(
-                "value"
-            )
-
-            element_id = element.get_attribute(
-                "id"
-            )
-
-            name = element.get_attribute(
-                "name"
-            )
-
-            if (
-                value == "2010_2010040"
-                or element_id == "2010_2010040"
-                or name == "2010_2010040"
-            ):
-
-                print(
-                    "バドミントンinputを発見"
-                )
-
-                try:
-                    element.check()
-                except Exception:
-                    element.click()
-
-                page.wait_for_timeout(500)
-
-                print(
-                    "バドミントン選択成功"
-                )
-
-                return True
-
-    except Exception as e:
-
-        print(
-            f"input方式エラー: {e}"
-        )
-
-    # -----------------------------------------------------
-    # 失敗
-    # -----------------------------------------------------
-
-    print("")
-    print(
-        "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-    )
-    print(
-        "バドミントンを選択できませんでした。"
-    )
-    print(
-        "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-    )
-
-    # 画面上に存在する「何をする」関連の情報をログ出力
-    try:
-
-        print("")
-        print(
-            "現在のselectの選択肢を確認します。"
-        )
-
-        for i in range(selects.count()):
-
-            select = selects.nth(i)
-
-            try:
-
-                options = select.locator(
-                    "option"
-                )
-
-                texts = []
-
-                for j in range(
-                    min(options.count(), 30)
-                ):
-
-                    texts.append(
-                        options.nth(j).inner_text().strip()
-                    )
-
-                print(
-                    f"select {i}: {texts}"
-                )
-
-            except Exception:
-                pass
-
-    except Exception:
-        pass
-
-    return False
-
-
-# =========================================================
-# 「さらに表示」を全部押す
-# =========================================================
-
-def get_all_results(page):
-
-    print(
-        "検索結果を読み込みます。"
-    )
-
-    previous_text = ""
-
-    for i in range(50):
-
-        print(
-            f"「さらに表示」確認 {i + 1}回目"
-        )
-
-        buttons = page.get_by_text(
-            "さらに表示",
-            exact=True
-        )
-
-        if buttons.count() == 0:
-
-            print(
-                "「さらに表示」はありません。"
-            )
-
-            break
-
-        clicked = False
-
-        for j in range(buttons.count()):
-
-            try:
-
-                button = buttons.nth(j)
-
-                if button.is_visible():
-
-                    print(
-                        "「さらに表示」をクリックします。"
-                    )
-
-                    button.click()
-
-                    page.wait_for_timeout(
-                        1000
-                    )
-
-                    clicked = True
-
-                    break
-
-            except Exception:
-                pass
-
-        if not clicked:
-            break
-
-        new_text = page.locator(
-            "body"
-        ).inner_text()
-
-        if new_text == previous_text:
-
-            print(
-                "画面内容が変わらなくなりました。"
-            )
-
-            break
-
-        previous_text = new_text
-
-    return page.locator(
-        "body"
-    ).inner_text()
-
-
-# =========================================================
-# 1地区を検索
-# =========================================================
-
-def search_district(
-    page,
-    district_name,
-    district_value
-):
-
-    print("")
-    print("=" * 60)
-    print(
-        f"検索開始: {district_name}"
-    )
-    print("=" * 60)
-
-    page.goto(
-        URL,
-        wait_until="networkidle",
-        timeout=60000
-    )
-
-    page.wait_for_timeout(1000)
-
-    # -----------------------------------------------------
-    # 期間：1か月
-    # -----------------------------------------------------
-
-    try:
-
-        days = page.locator(
-            "#days"
-        )
-
-        if days.count() > 0:
-
-            days.evaluate(
-                """
-                (el) => {
-                    el.value = "31";
-                    el.dispatchEvent(
-                        new Event(
-                            "change",
-                            {bubbles: true}
-                        )
-                    );
-                }
-                """
-            )
-
-            print(
-                "検索期間: 1か月"
-            )
-
-    except Exception as e:
-
-        print(
-            f"検索期間設定エラー: {e}"
-        )
-
-    # -----------------------------------------------------
-    # 時間帯
-    # -----------------------------------------------------
-
-    print(
-        "時間帯: 指定なし（全時間帯）"
-    )
-
-    # -----------------------------------------------------
-    # 地区
-    # -----------------------------------------------------
-
-    selects = page.locator(
-        "select"
-    )
-
-    district_found = False
-
-    for i in range(
-        selects.count()
-    ):
-
-        select = selects.nth(i)
-
-        try:
-
-            options = select.locator(
-                "option"
-            )
-
-            for j in range(
-                options.count()
-            ):
-
-                option = options.nth(j)
-
-                value = option.get_attribute(
-                    "value"
-                )
-
-                text = option.inner_text().strip()
-
-                if (
-                    value == district_value
-                    or district_name in text
-                ):
-
-                    select.select_option(
-                        value=value
-                    )
-
-                    page.wait_for_timeout(
-                        500
-                    )
-
-                    district_found = True
-
-                    print(
-                        f"地区設定: {district_name}"
-                    )
-
-                    break
-
-            if district_found:
-                break
-
-        except Exception:
-            pass
-
-    if not district_found:
-
-        raise RuntimeError(
-            f"{district_name}を選択できませんでした。"
-        )
-
-    # -----------------------------------------------------
-    # バドミントン
-    # -----------------------------------------------------
-
-    if not select_badminton(page):
-
-        raise RuntimeError(
-            "バドミントンを選択できませんでした。"
-        )
-
-    # -----------------------------------------------------
-    # 検索
-    # -----------------------------------------------------
-
-    search_candidates = [
-        "検索",
-        "この条件で検索",
-        "空き状況を検索",
-    ]
-
-    clicked_search = False
-
-    for label in search_candidates:
-
-        try:
-
-            buttons = page.get_by_text(
-                label,
-                exact=True
-            )
-
-            for i in range(
-                buttons.count()
-            ):
-
-                button = buttons.nth(i)
-
-                if button.is_visible():
-
-                    print(
-                        f"検索ボタン: {label}"
-                    )
-
-                    button.click()
-
-                    clicked_search = True
-
-                    break
-
-            if clicked_search:
-                break
-
-        except Exception:
-            pass
-
-    if not clicked_search:
-
-        try:
-
-            buttons = page.locator(
-                'button[type="submit"], input[type="submit"]'
-            )
-
-            if buttons.count() > 0:
-
-                buttons.first.click()
-
-                clicked_search = True
-
-        except Exception:
-            pass
-
-    if not clicked_search:
-
-        raise RuntimeError(
-            "検索ボタンを見つけられませんでした。"
-        )
-
-    page.wait_for_timeout(
-        2000
-    )
-
-    # -----------------------------------------------------
-    # 日付順
-    # -----------------------------------------------------
-
-    try:
-
-        date_order = page.get_by_text(
-            "日付順",
-            exact=True
-        )
-
-        for i in range(
-            date_order.count()
-        ):
-
-            item = date_order.nth(i)
-
-            if item.is_visible():
-
-                print(
-                    "「日付順」をクリック"
-                )
-
-                item.click()
-
-                page.wait_for_timeout(
-                    1000
-                )
-
-                break
-
-    except Exception as e:
-
-        print(
-            f"日付順クリックエラー: {e}"
-        )
-
-    # -----------------------------------------------------
-    # 全結果
-    # -----------------------------------------------------
-
-    return get_all_results(
-        page
-    )
-
-
-# =========================================================
-# 空き枠解析
-# =========================================================
-
-def parse_evening_slots(
-    body_text,
-    district_name
-):
-
-    slots = []
-
-    lines = [
-        line.strip()
-        for line in body_text.splitlines()
-        if line.strip()
-    ]
-
-    current_date = None
-
-    for i, line in enumerate(lines):
-
-        # -------------------------------------------------
-        # 日付
-        # -------------------------------------------------
-
-        date_match = re.search(
-            r"\d{1,2}月\d{1,2}日",
-            line
-        )
-
-        if date_match:
-
-            current_date = line
-
-        # -------------------------------------------------
-        # 時間帯
-        # -------------------------------------------------
-
-        time_matches = re.findall(
-            r"(\d{1,2}:\d{2})\s*[〜～-]\s*(\d{1,2}:\d{2})",
-            line
-        )
-
-        if not time_matches:
             continue
 
-        for start, end in time_matches:
-
-            if not is_evening_slot(
-                start
-            ):
-                continue
-
-            # -------------------------------------------------
-            # 周辺文字
-            # -------------------------------------------------
-
-            context_start = max(
-                0,
-                i - 8
-            )
-
-            context_end = min(
-                len(lines),
-                i + 3
-            )
-
-            context = lines[
-                context_start:context_end
-            ]
-
-            facility = "施設名不明"
-            room = "部屋名不明"
-
-            # -------------------------------------------------
-            # 施設名
-            # -------------------------------------------------
-
-            for text in context:
-
-                if any(
-                    word in text
-                    for word in [
-                        "体育館",
-                        "スポーツセンター",
-                        "運動場",
-                        "学校",
-                        "区民センター",
-                        "プラザ",
-                    ]
-                ):
-
-                    facility = text
-
-                    break
-
-            # -------------------------------------------------
-            # 部屋名
-            # -------------------------------------------------
-
-            for text in context:
-
-                if any(
-                    word in text
-                    for word in [
-                        "全面",
-                        "半面",
-                        "A面",
-                        "B面",
-                        "コート",
-                        "競技場",
-                    ]
-                ):
-
-                    room = text
-
-                    break
-
-            slots.append(
-                {
-                    "district": district_name,
-                    "date": current_date or "日付不明",
-                    "facility": facility,
-                    "room": room,
-                    "start": start,
-                    "end": end,
-                }
-            )
-
-    return slots
-
-
-# =========================================================
-# メイン
-# =========================================================
-
-def main():
-
-    print("")
-    print("=" * 60)
-    print("港区バドミントン空き情報監視")
-    print("=" * 60)
-
-    state_exists = os.path.exists(
-        STATE_FILE
-    )
-
-    previous_keys = load_previous_state()
-
-    print(
-        f"前回登録済み空き枠: {len(previous_keys)}件"
-    )
-
-    all_slots = []
-
-    with sync_playwright() as p:
-
-        browser = p.chromium.launch(
-            headless=True
-        )
-
-        page = browser.new_page(
-            viewport={
-                "width": 1440,
-                "height": 1000,
-            }
-        )
-
+    # フォールバック：labelで探す
+    labels = page.locator("label")
+    for i in range(labels.count()):
         try:
+            txt = normalize_text(labels.nth(i).inner_text())
+            if district in txt:
+                for attr in ("for",):
+                    target_id = labels.nth(i).get_attribute(attr)
+                    if target_id:
+                        page.locator(f"#{target_id}").select_option(label=district)
+                        page.wait_for_timeout(800)
+                        print(f"地区設定成功(label): {district}")
+                        return
+        except Exception:
+            continue
 
-            for district_name, district_value in DISTRICTS:
+    raise RuntimeError(f"{district} の選択肢を見つけられませんでした。")
 
-                try:
 
-                    body_text = search_district(
-                        page,
-                        district_name,
-                        district_value
-                    )
+def select_badminton(page):
+    print("バドミントンの選択を開始します。")
 
-                    # 結果保存
-                    filename = (
-                        "result_"
-                        + district_name.replace(
-                            "地区",
-                            ""
-                        )
-                        + ".txt"
-                    )
+    selects = page.locator("select")
+    count = selects.count()
+    print(f"select要素数: {count}")
 
-                    with open(
-                        filename,
-                        "w",
-                        encoding="utf-8"
-                    ) as f:
+    # 現在のサイトでは「何をする」がselect要素。
+    # optionの表示文字を直接調べる。
+    for i in range(count):
+        select = selects.nth(i)
+        try:
+            options = select.locator("option").all()
+            for option in options:
+                text = normalize_text(option.inner_text())
+                if text == "バドミントン" or "バドミントン" in text:
+                    value = option.get_attribute("value")
+                    print(f"バドミントンをselectから発見: select={i}, value={value}")
 
-                        f.write(
-                            body_text
-                        )
+                    if value:
+                        select.select_option(value=value)
+                    else:
+                        select.select_option(label=text)
 
-                    # 17:00以降を抽出
-                    slots = parse_evening_slots(
-                        body_text,
-                        district_name
-                    )
+                    page.wait_for_timeout(500)
+                    print("バドミントン選択成功")
+                    return
+        except Exception:
+            continue
 
-                    print(
-                        f"{district_name}: "
-                        f"{len(slots)}件"
-                    )
+    # 念のため従来のvalueも試す
+    for selector in [
+        'input[value="2010_2010040"]',
+        '#2010_2010040',
+        '[name="2010_2010040"]',
+    ]:
+        try:
+            loc = page.locator(selector).first
+            if loc.count() > 0:
+                loc.check()
+                page.wait_for_timeout(500)
+                print(f"バドミントン選択成功: {selector}")
+                return
+        except Exception:
+            pass
 
-                    all_slots.extend(
-                        slots
-                    )
+    # 失敗時はselectの中身をログに残す
+    print("バドミントンを選択できませんでした。現在のselect内容:")
+    for i in range(count):
+        try:
+            print(f"--- select {i} ---")
+            for text in selects.nth(i).locator("option").all_text_contents():
+                print(repr(normalize_text(text)))
+        except Exception:
+            pass
 
-                except Exception as e:
+    raise RuntimeError("バドミントンの選択肢を見つけられませんでした。")
 
-                    print(
-                        f"{district_name} の検索でエラー: {e}"
-                    )
 
-                    try:
-
-                        page.screenshot(
-                            path=(
-                                "error_"
-                                + district_name
-                                + ".png"
-                            ),
-                            full_page=True
-                        )
-
-                    except Exception:
-                        pass
-
-        finally:
-
-            browser.close()
-
-    # =====================================================
-    # 重複除去
-    # =====================================================
-
-    unique_slots = {}
-
-    for slot in all_slots:
-
-        unique_slots[
-            make_slot_key(slot)
-        ] = slot
-
-    all_slots = list(
-        unique_slots.values()
-    )
-
-    print("")
-    print(
-        f"17:00以降開始の空き枠合計: "
-        f"{len(all_slots)}件"
-    )
-
-    # =====================================================
-    # 結果保存
-    # =====================================================
-
-    with open(
-        "evening-results.txt",
-        "w",
-        encoding="utf-8"
-    ) as f:
-
-        if not all_slots:
-
-            f.write(
-                "17:00以降開始の空き枠はありませんでした。\n"
-            )
-
-        else:
-
-            for slot in all_slots:
-
-                f.write(
-                    f"{slot['district']} | "
-                    f"{slot['date']} | "
-                    f"{slot['facility']} | "
-                    f"{slot['room']} | "
-                    f"{slot['start']}〜{slot['end']}\n"
-                )
-
-    # =====================================================
-    # 今回のキー
-    # =====================================================
-
-    current_keys = {
-        make_slot_key(slot)
-        for slot in all_slots
-    }
-
-    # =====================================================
-    # 新規枠
-    # =====================================================
-
-    new_keys = (
-        current_keys - previous_keys
-    )
-
-    new_slots = [
-        slot
-        for slot in all_slots
-        if make_slot_key(slot) in new_keys
+def click_search(page):
+    # 「検索」という文字を持つボタン/リンクを探す
+    candidates = [
+        page.get_by_role("button", name="検索", exact=True),
+        page.get_by_role("link", name="検索", exact=True),
+        page.locator("input[type='submit'][value='検索']"),
+        page.locator("button").filter(has_text="検索"),
+        page.locator("a").filter(has_text="検索"),
     ]
 
-    print(
-        f"今回新しく出現した空き枠: "
-        f"{len(new_slots)}件"
+    for loc in candidates:
+        try:
+            if loc.count() > 0:
+                loc.first.click()
+                print("検索ボタン: 検索")
+                page.wait_for_load_state("domcontentloaded", timeout=15000)
+                page.wait_for_timeout(1200)
+                return
+        except Exception:
+            continue
+
+    raise RuntimeError("検索ボタンを見つけられませんでした。")
+
+
+def click_date_order(page):
+    """検索結果の「日付順」をクリックする。"""
+    candidates = [
+        page.get_by_text("日付順", exact=True),
+        page.get_by_role("link", name="日付順", exact=True),
+        page.locator("a").filter(has_text="日付順"),
+        page.locator("button").filter(has_text="日付順"),
+    ]
+
+    for loc in candidates:
+        try:
+            if loc.count() > 0:
+                loc.first.click()
+                page.wait_for_timeout(1000)
+                print("「日付順」をクリック")
+                return
+        except Exception:
+            continue
+
+    print("「日付順」が見つからないため、そのまま続行します。")
+
+
+def get_all_results(page):
+    """「さらに表示」を最後まで押して、検索結果全体を取得する。"""
+    print("検索結果を読み込みます。")
+
+    # 最初の結果が描画されるまで少し待つ
+    page.wait_for_timeout(1500)
+
+    for n in range(1, 31):
+        print(f"「さらに表示」確認 {n}回目")
+
+        buttons = page.get_by_text("さらに表示", exact=True)
+        if buttons.count() == 0:
+            # DOM上の別要素も確認
+            buttons = page.locator("a,button").filter(has_text="さらに表示")
+
+        if buttons.count() == 0:
+            break
+
+        try:
+            button = buttons.first
+            if not button.is_visible():
+                break
+
+            before = normalize_text(page.locator("body").inner_text())
+            print("「さらに表示」をクリックします。")
+            button.click()
+            page.wait_for_timeout(1200)
+
+            after = normalize_text(page.locator("body").inner_text())
+            if after == before:
+                break
+        except Exception:
+            break
+
+    return page.locator("body").inner_text()
+
+
+DATE_RE = re.compile(r"^(\d{1,2})月(\d{1,2})日")
+
+
+def parse_available_rows(body_text, district):
+    """
+    検索結果の本文から、
+      日付 / 館 / 施設 / 時間帯
+    を抽出する。
+
+    実際の検索結果は概ね次の構造になっている：
+      10月7日(水曜)2026年
+      館 施設 時間帯 予約
+      スポーツセンター
+      アリーナ半面Ａ
+      09時00分～11時00分
+      ...
+    """
+    raw_lines = body_text.replace("\r", "\n").split("\n")
+    lines = [normalize_text(x) for x in raw_lines]
+    lines = [x for x in lines if x]
+
+    results = []
+    current_date = None
+
+    # 時間帯の正規表現
+    time_re = re.compile(
+        r"^(\d{1,2})時(\d{2})分～(\d{1,2})時(\d{2})分$"
     )
 
-    # =====================================================
-    # new-slots.txt
-    # =====================================================
+    for i, line in enumerate(lines):
+        # 日付を更新
+        m = DATE_RE.match(line)
+        if m:
+            current_date = f"{m.group(1)}月{m.group(2)}日"
+            continue
 
-    with open(
-        "new-slots.txt",
-        "w",
-        encoding="utf-8"
-    ) as f:
+        tm = time_re.match(line)
+        if not tm or current_date is None:
+            continue
 
-        if not state_exists:
+        # 時間帯の直前2つの意味のある行が「館」「施設」。
+        # 途中にグラフ用の文字が入っているケースを避けるため、
+        # 直前から上へ探す。
+        previous = lines[max(0, i - 6):i]
 
-            f.write(
-                "初回実行のため、現在の空き枠を基準として保存しました。\n"
-            )
+        # 最後から探して「予約」「時間帯」等の見出しを除外
+        candidates = []
+        for x in reversed(previous):
+            if x in {"予約", "館", "施設", "時間帯", "すべて開く", "すべて閉じる"}:
+                continue
+            if x.startswith("0") and "6" in x and "12" in x and "18" in x and "24" in x:
+                continue
+            candidates.append(x)
 
-            f.write(
-                "Discord通知は行っていません。\n"
-            )
+        if len(candidates) < 2:
+            continue
 
-        elif not new_slots:
+        facility = candidates[0]
+        hall = candidates[1]
 
-            f.write(
-                "新しく出現した空き枠はありませんでした。\n"
-            )
+        # ヘッダーやページ上部の文字を誤認しないための除外
+        bad = {
+            "しせつよやく", "ログイン", "ホーム", "予約", "抽選",
+            "利用者", "その他", "空き状況", "ヘルプ", "指定条件",
+            "条件変更", "施設ごと", "日付順",
+        }
+        if hall in bad or facility in bad:
+            continue
 
-        else:
+        start_h = int(tm.group(1))
+        start_m = int(tm.group(2))
+        end_h = int(tm.group(3))
+        end_m = int(tm.group(4))
 
-            for slot in new_slots:
+        key = (
+            f"{district}|{current_date}|{hall}|{facility}|"
+            f"{start_h:02d}:{start_m:02d}-{end_h:02d}:{end_m:02d}"
+        )
 
-                f.write(
-                    f"{slot['district']} | "
-                    f"{slot['date']} | "
-                    f"{slot['facility']} | "
-                    f"{slot['room']} | "
-                    f"{slot['start']}〜{slot['end']}\n"
+        results.append({
+            "key": key,
+            "district": district,
+            "date": current_date,
+            "hall": hall,
+            "facility": facility,
+            "start": f"{start_h:02d}:{start_m:02d}",
+            "end": f"{end_h:02d}:{end_m:02d}",
+            "start_minutes": start_h * 60 + start_m,
+        })
+
+    # 同じ行を二重取得しない
+    unique = {}
+    for row in results:
+        unique[row["key"]] = row
+
+    return list(unique.values())
+
+
+def format_slot(row):
+    return (
+        f"{row['date']} {row['district']} "
+        f"{row['hall']} / {row['facility']} "
+        f"{row['start']}～{row['end']}"
+    )
+
+
+def main():
+    print("=====================================================")
+    print("港区バドミントン空き情報監視")
+    print("=====================================================")
+
+    previous_state = load_state()
+    print(f"前回登録済み空き枠: {len(previous_state)}件")
+
+    all_evening = []
+    successful_districts = 0
+    district_errors = []
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+
+        for district in DISTRICTS:
+            print("\n============================================================")
+            print(f"検索開始: {district}")
+            print("============================================================")
+            print("検索期間: 1か月")
+            print("時間帯: 指定なし（全時間帯）")
+
+            page = browser.new_page()
+
+            try:
+                page.goto(URL, wait_until="domcontentloaded", timeout=30000)
+                page.wait_for_timeout(1000)
+
+                # 「1か月」
+                month = page.get_by_text("1か月", exact=True)
+                if month.count() == 0:
+                    month = page.locator("label").filter(has_text="1か月")
+                if month.count() == 0:
+                    raise RuntimeError("「1か月」を見つけられませんでした。")
+
+                month.first.click()
+                page.wait_for_timeout(500)
+
+                # 時間帯は選択しない（全時間帯）
+                select_district(page, district)
+                select_badminton(page)
+                click_search(page)
+                click_date_order(page)
+
+                body = get_all_results(page)
+
+                # 生データ保存
+                with open(
+                    f"result_{district.replace('地区', '')}.txt",
+                    "w",
+                    encoding="utf-8",
+                ) as f:
+                    f.write(body)
+
+                rows = parse_available_rows(body, district)
+
+                # 検索結果ページ上に「合致した空き状況」があり、
+                # 時間帯行もあるのに0件なら、抽出失敗と判断してstateを更新しない。
+                has_available_message = "指定条件に合致した空き状況を表示しています" in body
+                has_time_row = bool(
+                    re.search(r"\d{1,2}時\d{2}分～\d{1,2}時\d{2}分", body)
                 )
 
-    # =====================================================
-    # Discord
-    # =====================================================
+                if has_available_message and has_time_row and not rows:
+                    raise RuntimeError(
+                        f"{district}: 検索結果は取得できましたが、空き枠の抽出に失敗しました。"
+                    )
 
-    if not state_exists:
+                evening = [
+                    row for row in rows
+                    if row["start_minutes"] >= START_HOUR * 60
+                ]
 
-        print(
-            "初回実行なのでDiscord通知はしません。"
+                print(f"{district}: 検索結果 {len(rows)}件")
+                print(f"{district}: 17:00以降開始 {len(evening)}件")
+
+                all_evening.extend(evening)
+                successful_districts += 1
+
+            except Exception as e:
+                print(f"{district} の検索でエラー: {e}")
+                district_errors.append(district)
+
+                try:
+                    page.screenshot(
+                        path=f"error_{district.replace('地区', '')}.png",
+                        full_page=True,
+                    )
+                except Exception:
+                    pass
+
+            finally:
+                page.close()
+
+        browser.close()
+
+    # 全地区成功時のみstateを更新する
+    if district_errors or successful_districts != len(DISTRICTS):
+        print("\n============================================================")
+        print("検索に失敗した地区があるため、state.jsonは更新しません。")
+        print("============================================================")
+        print("エラー地区:", ", ".join(district_errors))
+        print("誤通知防止のため、今回はDiscord通知も行いません。")
+        return
+
+    # eveningをkeyで一意化
+    current = {}
+    for row in all_evening:
+        current[row["key"]] = row
+
+    current_state = set(current.keys())
+    new_keys = current_state - previous_state
+    new_rows = [current[k] for k in sorted(new_keys)]
+
+    # 全17:00以降枠を書き出し
+    with open(EVENING_FILE, "w", encoding="utf-8") as f:
+        f.write("17:00以降開始の空き枠\n")
+        f.write("==============================\n")
+        if current:
+            for key in sorted(current):
+                f.write(format_slot(current[key]) + "\n")
+        else:
+            f.write("該当なし\n")
+
+    # 新規枠を書き出し
+    with open(NEW_FILE, "w", encoding="utf-8") as f:
+        if new_rows:
+            for row in new_rows:
+                f.write(format_slot(row) + "\n")
+        else:
+            f.write("新規なし\n")
+
+    print("\n17:00以降開始の空き枠合計:", len(current_state), "件")
+    print("今回新しく出現した空き枠:", len(new_rows), "件")
+
+    if new_rows:
+        message_lines = [
+            "🏸 港区バドミントン空き情報",
+            "17:00以降開始の新しい空き枠があります。",
+            "",
+        ]
+        message_lines.extend(
+            f"・{format_slot(row)}"
+            for row in new_rows
         )
+        message = "\n".join(message_lines)
 
-    elif new_slots:
-
-        print(
-            f"{len(new_slots)}件をDiscordへ通知します。"
-        )
-
-        send_discord_notification(
-            new_slots
-        )
-
+        send_discord(message)
     else:
+        print("新規空き枠がないためDiscord通知はしません。")
 
-        print(
-            "新規空き枠がないためDiscord通知はしません。"
-        )
+    # 正常終了した場合だけstate更新
+    save_state(current_state)
 
-    # =====================================================
-    # 状態保存
-    # =====================================================
-
-    save_current_state(
-        current_keys
-    )
-
-    print("")
-    print("=" * 60)
+    print("\n============================================================")
     print("監視終了")
-    print("=" * 60)
+    print("============================================================")
 
-
-# =========================================================
-# 実行
-# =========================================================
 
 if __name__ == "__main__":
     main()
