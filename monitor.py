@@ -944,4 +944,249 @@ def main():
 
     all_slots = []
 
-   
+    with sync_playwright() as p:
+
+        browser = p.chromium.launch(
+            headless=True
+        )
+
+        page = browser.new_page(
+            viewport={
+                "width": 1440,
+                "height": 1000,
+            }
+        )
+
+        try:
+
+            for district_name, district_value in DISTRICTS:
+
+                try:
+
+                    body_text = search_district(
+                        page,
+                        district_name,
+                        district_value
+                    )
+
+                    # 結果保存
+                    filename = (
+                        "result_"
+                        + district_name.replace(
+                            "地区",
+                            ""
+                        )
+                        + ".txt"
+                    )
+
+                    with open(
+                        filename,
+                        "w",
+                        encoding="utf-8"
+                    ) as f:
+
+                        f.write(
+                            body_text
+                        )
+
+                    # 17:00以降を抽出
+                    slots = parse_evening_slots(
+                        body_text,
+                        district_name
+                    )
+
+                    print(
+                        f"{district_name}: "
+                        f"{len(slots)}件"
+                    )
+
+                    all_slots.extend(
+                        slots
+                    )
+
+                except Exception as e:
+
+                    print(
+                        f"{district_name} の検索でエラー: {e}"
+                    )
+
+                    try:
+
+                        page.screenshot(
+                            path=(
+                                "error_"
+                                + district_name
+                                + ".png"
+                            ),
+                            full_page=True
+                        )
+
+                    except Exception:
+                        pass
+
+        finally:
+
+            browser.close()
+
+    # =====================================================
+    # 重複除去
+    # =====================================================
+
+    unique_slots = {}
+
+    for slot in all_slots:
+
+        unique_slots[
+            make_slot_key(slot)
+        ] = slot
+
+    all_slots = list(
+        unique_slots.values()
+    )
+
+    print("")
+    print(
+        f"17:00以降開始の空き枠合計: "
+        f"{len(all_slots)}件"
+    )
+
+    # =====================================================
+    # 結果保存
+    # =====================================================
+
+    with open(
+        "evening-results.txt",
+        "w",
+        encoding="utf-8"
+    ) as f:
+
+        if not all_slots:
+
+            f.write(
+                "17:00以降開始の空き枠はありませんでした。\n"
+            )
+
+        else:
+
+            for slot in all_slots:
+
+                f.write(
+                    f"{slot['district']} | "
+                    f"{slot['date']} | "
+                    f"{slot['facility']} | "
+                    f"{slot['room']} | "
+                    f"{slot['start']}〜{slot['end']}\n"
+                )
+
+    # =====================================================
+    # 今回のキー
+    # =====================================================
+
+    current_keys = {
+        make_slot_key(slot)
+        for slot in all_slots
+    }
+
+    # =====================================================
+    # 新規枠
+    # =====================================================
+
+    new_keys = (
+        current_keys - previous_keys
+    )
+
+    new_slots = [
+        slot
+        for slot in all_slots
+        if make_slot_key(slot) in new_keys
+    ]
+
+    print(
+        f"今回新しく出現した空き枠: "
+        f"{len(new_slots)}件"
+    )
+
+    # =====================================================
+    # new-slots.txt
+    # =====================================================
+
+    with open(
+        "new-slots.txt",
+        "w",
+        encoding="utf-8"
+    ) as f:
+
+        if not state_exists:
+
+            f.write(
+                "初回実行のため、現在の空き枠を基準として保存しました。\n"
+            )
+
+            f.write(
+                "Discord通知は行っていません。\n"
+            )
+
+        elif not new_slots:
+
+            f.write(
+                "新しく出現した空き枠はありませんでした。\n"
+            )
+
+        else:
+
+            for slot in new_slots:
+
+                f.write(
+                    f"{slot['district']} | "
+                    f"{slot['date']} | "
+                    f"{slot['facility']} | "
+                    f"{slot['room']} | "
+                    f"{slot['start']}〜{slot['end']}\n"
+                )
+
+    # =====================================================
+    # Discord
+    # =====================================================
+
+    if not state_exists:
+
+        print(
+            "初回実行なのでDiscord通知はしません。"
+        )
+
+    elif new_slots:
+
+        print(
+            f"{len(new_slots)}件をDiscordへ通知します。"
+        )
+
+        send_discord_notification(
+            new_slots
+        )
+
+    else:
+
+        print(
+            "新規空き枠がないためDiscord通知はしません。"
+        )
+
+    # =====================================================
+    # 状態保存
+    # =====================================================
+
+    save_current_state(
+        current_keys
+    )
+
+    print("")
+    print("=" * 60)
+    print("監視終了")
+    print("=" * 60)
+
+
+# =========================================================
+# 実行
+# =========================================================
+
+if __name__ == "__main__":
+    main()
