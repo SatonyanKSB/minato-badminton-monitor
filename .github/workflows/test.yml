@@ -32,4 +32,6 @@ jobs:
           path: |
             result_*.png
             all-district-results.txt
+            evening-results.txt
+            error_*.png
           if-no-files-found: warn
