@@ -30,9 +30,6 @@ jobs:
         with:
           name: test-results
           path: |
-            site.png
-            diagnostics.txt
-            search-result.png
-            search-result.txt
-            search-result.html
-          if-no-files-found: ignore
+            result_*.png
+            all-district-results.txt
+          if-no-files-found: warn
