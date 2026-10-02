@@ -19,45 +19,24 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-
-      # ============================================
-      # リポジトリ取得
-      # ============================================
-
       - name: Checkout
         uses: actions/checkout@v4
-
-      # ============================================
-      # Python
-      # ============================================
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      # ============================================
-      # 必要パッケージ
-      # ============================================
-
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
           python -m playwright install --with-deps chromium
-
-      # ============================================
-      # 監視実行
-      # ============================================
 
       - name: Run monitor
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
           python monitor.py
-
-      # ============================================
-      # 結果確認
-      # ============================================
 
       - name: Show generated files
         if: always()
@@ -73,10 +52,6 @@ jobs:
           echo "===== state.json ====="
           cat state.json || true
 
-      # ============================================
-      # state.jsonを保存
-      # ============================================
-
       - name: Commit state.json
         if: success()
         run: |
@@ -91,10 +66,6 @@ jobs:
             git commit -m "Update monitor state"
             git push
           fi
-
-      # ============================================
-      # デバッグ用ファイル
-      # ============================================
 
       - name: Upload results
         if: always()
