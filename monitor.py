@@ -87,7 +87,8 @@ def normalize_text(text):
 
 TIME_PATTERN = re.compile(
     r"(?P<start>\d{1,2})時(?P<start_min>\d{2})分"
-    r"\s*[～〜~\-－]\s*"
+    r"\s*[～〜~\-－]"
+    r"\s*"
     r"(?P<end>\d{1,2})時(?P<end_min>\d{2})分"
 )
 
@@ -135,12 +136,8 @@ def send_ntfy(message):
 
         url = f"https://ntfy.sh/{NTFY_TOPIC}"
 
-        # ----------------------------------------------------
-        # 重要：
         # HTTPヘッダーには日本語・絵文字を入れない
-        # 本文(message)はUTF-8で送信するので問題なし
-        # ----------------------------------------------------
-
+        # 本文はUTF-8で送信する
         request = urllib.request.Request(
             url,
             data=message.encode("utf-8"),
@@ -243,7 +240,6 @@ def select_district(page, district):
                     if not text:
                         continue
 
-                    # 完全一致
                     if text == district:
 
                         select.select_option(
@@ -256,7 +252,6 @@ def select_district(page, district):
 
                         return True
 
-                    # 表記揺れ対応
                     normalized = (
                         text
                         .replace("（すべて）", "")
@@ -657,6 +652,33 @@ def is_date_line(text):
 
 
 # ============================================================
+# 結果ページのヘッダー判定
+# ============================================================
+
+def is_result_header(line):
+
+    normalized = normalize_text(line)
+
+    # 実際のサイトでは
+    # 「館    施設    時間帯    予約」
+    # がタブ区切りで1行になっている。
+    if (
+        "館" in normalized
+        and "施設" in normalized
+        and "時間帯" in normalized
+        and "予約" in normalized
+    ):
+        return True
+
+    return normalized in {
+        "館",
+        "施設",
+        "時間帯",
+        "予約",
+    }
+
+
+# ============================================================
 # 検索結果解析
 # ============================================================
 
@@ -678,17 +700,6 @@ def parse_result_lines(text):
     current_date = None
 
     seen = set()
-
-    ignored = {
-        "館",
-        "施設",
-        "時間帯",
-        "予約",
-        "すべて開く",
-        "すべて閉じる",
-        "施設ごと",
-        "日付順",
-    }
 
     for i, line in enumerate(lines):
 
@@ -741,20 +752,16 @@ def parse_result_lines(text):
             continue
 
         # ----------------------------------------------------
-        # 実際の検索結果では
+        # 時間帯の直前から
+        # 「館名」「施設名」を取得
         #
-        # 館
-        # 施設
-        # 時間帯
-        # 予約
+        # 実際のサイト：
+        #
+        # 館  施設  時間帯  予約
         # 港南小学校
         # 体育館全面（休日）
         # 18時00分～21時00分
         #
-        # となっている。
-        #
-        # 時間帯の直前にある
-        # 「施設名」「部屋名」を取得する。
         # ----------------------------------------------------
 
         previous = []
@@ -763,98 +770,99 @@ def parse_result_lines(text):
 
         while (
             j >= 0
-            and len(previous) < 8
+            and len(previous) < 10
         ):
 
             candidate = lines[j]
 
-            if candidate:
-                previous.append(candidate)
-
-            j -= 1
-
-        # 直近から遡るため、
-        # previous[0] が施設名（部屋名）、
-        # previous[1] が館名になる構造を利用する。
-
-        facility = ""
-        building = ""
-
-        for candidate in previous:
-
-            if candidate in ignored:
-                continue
-
+            # 日付を越えたら終了
             if is_date_line(candidate):
                 break
 
-            if extract_time(candidate):
+            # 結果ヘッダーは完全に除外
+            if is_result_header(candidate):
+                j -= 1
                 continue
 
-            # 時刻軸
+            # その他の不要な表示
+            if candidate in {
+                "すべて開く",
+                "すべて閉じる",
+                "施設ごと",
+                "日付順",
+            }:
+                j -= 1
+                continue
+
+            # 時刻は除外
+            if extract_time(candidate):
+                j -= 1
+                continue
+
+            # 数字だけの時刻軸などを除外
             if re.fullmatch(
                 r"[\d\s\t]+",
                 candidate
             ):
+                j -= 1
                 continue
 
-            # ------------------------------------------------
-            # 実際の構造：
-            #
-            # 港南小学校
-            # 体育館全面（休日）
-            #
-            # なので最初に見つかったものが施設名、
-            # 2番目が館名。
-            # ------------------------------------------------
+            previous.append(candidate)
 
-            if not facility:
-                facility = candidate
-                continue
-
-            if not building:
-                building = facility
-                facility = candidate
-                break
+            j -= 1
 
         # ----------------------------------------------------
-        # 取得できなかった場合は無視
+        # 直前の2つが
+        #
+        # previous[0] = 施設名
+        # previous[1] = 館名
+        #
+        # なので逆にする。
+        # ----------------------------------------------------
+
+        facility = ""
+        building = ""
+
+        if len(previous) >= 1:
+            facility = previous[0]
+
+        if len(previous) >= 2:
+            building = previous[1]
+
+        # ----------------------------------------------------
+        # ヘッダー等が混入していないか確認
         # ----------------------------------------------------
 
         if not facility:
             continue
 
-        # ----------------------------------------------------
-        # ヘッダー混入防止
-        # ----------------------------------------------------
-
-        if facility in ignored:
+        if is_result_header(facility):
             continue
 
-        if building in ignored:
+        if is_result_header(building):
             continue
 
         # ----------------------------------------------------
-        # 施設名にヘッダーが混ざった場合の除去
+        # 明らかに検索結果ではない文字を除外
         # ----------------------------------------------------
 
-        header_words = (
-            "館",
-            "施設",
-            "時間帯",
+        invalid_words = {
+            "指定条件に合致した空き状況を表示しています。",
+            "利用する施設・日時の予約ボタンをクリックします。",
+            "条件変更",
+            "空き状況",
+            "ホーム",
             "予約",
-        )
+            "抽選",
+            "利用者",
+            "その他",
+            "ログイン",
+        }
 
-        if any(
-            word in facility
-            for word in header_words
-        ):
+        if facility in invalid_words:
             continue
 
-        if any(
-            word in building
-            for word in header_words
-        ):
+        if building in invalid_words:
             continue
 
         # ----------------------------------------------------
@@ -968,6 +976,7 @@ def search_district(page, district):
         page,
         district
     ):
+
         raise RuntimeError(
             f"地区選択に失敗: {district}"
         )
