@@ -23,7 +23,7 @@ DISTRICTS = [
 
 ACTIVITY = "バドミントン"
 
-# 「開始時刻」が17:00以降の枠だけ通知
+# 開始時刻が17:00以降の枠だけ通知
 NOTIFY_START_HOUR = 17
 
 # 状態保存
@@ -115,9 +115,9 @@ def is_after_17(start_hour, start_min):
     """
 
     return (
-        start_hour > 17
+        start_hour > NOTIFY_START_HOUR
         or (
-            start_hour == 17
+            start_hour == NOTIFY_START_HOUR
             and start_min >= 0
         )
     )
@@ -154,7 +154,6 @@ def send_ntfy(message):
             request,
             timeout=20
         ) as response:
-
             status = response.status
 
         print(f"ntfy送信成功: HTTP {status}")
@@ -238,13 +237,12 @@ def select_district(page, district):
                         )
 
                         print(
-                            f"地区選択成功（完全一致）: "
-                            f"{text}"
+                            f"地区選択成功（完全一致）: {text}"
                         )
 
                         return True
 
-                    # 表記揺れ対応
+                    # 「地区名(すべて)」等の表記揺れ
                     normalized = (
                         text
                         .replace("（すべて）", "")
@@ -259,8 +257,7 @@ def select_district(page, district):
                         )
 
                         print(
-                            f"地区選択成功（部分一致）: "
-                            f"{text}"
+                            f"地区選択成功（部分一致）: {text}"
                         )
 
                         return True
@@ -336,7 +333,7 @@ def select_badminton(page):
         except Exception:
             continue
 
-    # select以外も念のため確認
+    # select以外も確認
     try:
 
         element = page.get_by_text(
@@ -454,12 +451,10 @@ def click_search(page):
                 )
 
                 try:
-
                     page.wait_for_load_state(
                         "networkidle",
                         timeout=15000
                     )
-
                 except Exception:
                     pass
 
@@ -513,12 +508,10 @@ def click_date_order(page):
                 time.sleep(1)
 
                 try:
-
                     page.wait_for_load_state(
                         "networkidle",
                         timeout=10000
                     )
-
                 except Exception:
                     pass
 
@@ -585,10 +578,8 @@ def click_more(page):
                     item = locator.nth(i)
 
                     try:
-
                         if not item.is_visible():
                             continue
-
                     except Exception:
                         pass
 
@@ -619,8 +610,7 @@ def click_more(page):
             break
 
     print(
-        f"「さらに表示」クリック回数: "
-        f"{count_clicked}"
+        f"「さらに表示」クリック回数: {count_clicked}"
     )
 
     return count_clicked
@@ -636,11 +626,7 @@ DATE_PATTERN = re.compile(
 
 
 def is_date_line(text):
-
-    return (
-        DATE_PATTERN.match(text)
-        is not None
-    )
+    return DATE_PATTERN.match(text) is not None
 
 
 # ============================================================
@@ -664,7 +650,6 @@ def parse_result_lines(text):
 
     current_date = None
 
-    # 重複防止
     seen = set()
 
     ignored = {
@@ -744,7 +729,6 @@ def parse_result_lines(text):
             candidate = lines[j]
 
             if candidate:
-
                 previous.append(candidate)
 
             j -= 1
@@ -762,7 +746,6 @@ def parse_result_lines(text):
             if extract_time(candidate):
                 continue
 
-            # 時刻目盛り等
             if re.fullmatch(
                 r"[\d\s\t]+",
                 candidate
@@ -791,7 +774,7 @@ def parse_result_lines(text):
             continue
 
         # ----------------------------------------------------
-        # 一意キー
+        # 重複除外
         # ----------------------------------------------------
 
         key = (
@@ -823,7 +806,7 @@ def parse_result_lines(text):
 
 
 # ============================================================
-# 表示用
+# 表示
 # ============================================================
 
 def format_row(row):
@@ -901,7 +884,6 @@ def search_district(page, district):
         page,
         district
     ):
-
         raise RuntimeError(
             f"地区選択に失敗: {district}"
         )
@@ -911,7 +893,6 @@ def search_district(page, district):
     # --------------------------------------------------------
 
     if not select_badminton(page):
-
         raise RuntimeError(
             "バドミントン選択に失敗"
         )
@@ -921,7 +902,6 @@ def search_district(page, district):
     # --------------------------------------------------------
 
     if not click_search(page):
-
         raise RuntimeError(
             "検索ボタンをクリックできませんでした"
         )
@@ -930,9 +910,12 @@ def search_district(page, district):
 
     # --------------------------------------------------------
     # 日付順
+    # ★ pageを正しく渡す
     # --------------------------------------------------------
 
-    click_date_order()
+    click_date_order(page)
+
+    time.sleep(1)
 
     # --------------------------------------------------------
     # さらに表示
@@ -1129,7 +1112,7 @@ def main():
         return
 
     # ========================================================
-    # 現在の空き枠
+    # 現在の17:00開始以降空き枠
     # ========================================================
 
     current_state = set()
@@ -1242,7 +1225,7 @@ def main():
         )
 
     # ========================================================
-    # 通知不要
+    # 新規枠なし
     # ========================================================
 
     if not new_rows:
@@ -1252,8 +1235,9 @@ def main():
             "ntfy通知はしません。"
         )
 
-        # 正常検索できた場合は現在状態を保存
-        save_state(current_state)
+        save_state(
+            current_state
+        )
 
         return
 
@@ -1306,7 +1290,7 @@ def main():
     print(message)
 
     # ========================================================
-    # 通知
+    # ntfy送信
     # ========================================================
 
     success = send_ntfy(
