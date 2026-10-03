@@ -110,10 +110,6 @@ def extract_time(text):
 
 
 def is_after_17(start_hour, start_min):
-    """
-    開始時刻が17:00以降ならTrue
-    """
-
     return (
         start_hour > NOTIFY_START_HOUR
         or (
@@ -128,6 +124,7 @@ def is_after_17(start_hour, start_min):
 # ============================================================
 
 def send_ntfy(message):
+
     if not NTFY_TOPIC:
         print("NTFY_TOPICが設定されていません。")
         return False
@@ -138,12 +135,18 @@ def send_ntfy(message):
 
         url = f"https://ntfy.sh/{NTFY_TOPIC}"
 
+        # ----------------------------------------------------
+        # 重要：
+        # HTTPヘッダーには日本語・絵文字を入れない
+        # 本文(message)はUTF-8で送信するので問題なし
+        # ----------------------------------------------------
+
         request = urllib.request.Request(
             url,
             data=message.encode("utf-8"),
             method="POST",
             headers={
-                "Title": "🏸 港区バドミントン空き枠",
+                "Title": "Minato Badminton",
                 "Priority": "high",
                 "Tags": "badminton",
                 "Content-Type": "text/plain; charset=utf-8",
@@ -154,15 +157,20 @@ def send_ntfy(message):
             request,
             timeout=20
         ) as response:
+
             status = response.status
 
-        print(f"ntfy送信成功: HTTP {status}")
+        print(
+            f"ntfy送信成功: HTTP {status}"
+        )
 
         return 200 <= status < 300
 
     except urllib.error.HTTPError as e:
 
-        print(f"ntfy送信エラー: HTTP {e.code}")
+        print(
+            f"ntfy送信エラー: HTTP {e.code}"
+        )
 
         try:
             print(
@@ -178,7 +186,9 @@ def send_ntfy(message):
 
     except Exception as e:
 
-        print(f"ntfy送信エラー: {e}")
+        print(
+            f"ntfy送信エラー: {e}"
+        )
 
         return False
 
@@ -189,13 +199,17 @@ def send_ntfy(message):
 
 def select_district(page, district):
 
-    print(f"地区選択を開始: {district}")
+    print(
+        f"地区選択を開始: {district}"
+    )
 
     selects = page.locator("select")
 
     count = selects.count()
 
-    print(f"select要素数: {count}")
+    print(
+        f"select要素数: {count}"
+    )
 
     target = (
         district
@@ -242,7 +256,7 @@ def select_district(page, district):
 
                         return True
 
-                    # 「地区名(すべて)」等の表記揺れ
+                    # 表記揺れ対応
                     normalized = (
                         text
                         .replace("（すべて）", "")
@@ -281,7 +295,9 @@ def select_district(page, district):
 
 def select_badminton(page):
 
-    print("バドミントン選択を開始")
+    print(
+        "バドミントン選択を開始"
+    )
 
     selects = page.locator("select")
 
@@ -333,7 +349,6 @@ def select_badminton(page):
         except Exception:
             continue
 
-    # select以外も確認
     try:
 
         element = page.get_by_text(
@@ -396,7 +411,9 @@ def select_one_month(page):
 
                 time.sleep(0.5)
 
-                print("期間: 1か月")
+                print(
+                    "期間: 1か月"
+                )
 
                 return True
 
@@ -451,10 +468,12 @@ def click_search(page):
                 )
 
                 try:
+
                     page.wait_for_load_state(
                         "networkidle",
                         timeout=15000
                     )
+
                 except Exception:
                     pass
 
@@ -508,10 +527,12 @@ def click_date_order(page):
                 time.sleep(1)
 
                 try:
+
                     page.wait_for_load_state(
                         "networkidle",
                         timeout=10000
                     )
+
                 except Exception:
                     pass
 
@@ -578,8 +599,10 @@ def click_more(page):
                     item = locator.nth(i)
 
                     try:
+
                         if not item.is_visible():
                             continue
+
                     except Exception:
                         pass
 
@@ -626,7 +649,11 @@ DATE_PATTERN = re.compile(
 
 
 def is_date_line(text):
-    return DATE_PATTERN.match(text) is not None
+
+    return (
+        DATE_PATTERN.match(text)
+        is not None
+    )
 
 
 # ============================================================
@@ -714,7 +741,20 @@ def parse_result_lines(text):
             continue
 
         # ----------------------------------------------------
-        # 時間帯直前の施設・館を取得
+        # 実際の検索結果では
+        #
+        # 館
+        # 施設
+        # 時間帯
+        # 予約
+        # 港南小学校
+        # 体育館全面（休日）
+        # 18時00分～21時00分
+        #
+        # となっている。
+        #
+        # 時間帯の直前にある
+        # 「施設名」「部屋名」を取得する。
         # ----------------------------------------------------
 
         previous = []
@@ -723,7 +763,7 @@ def parse_result_lines(text):
 
         while (
             j >= 0
-            and len(previous) < 10
+            and len(previous) < 8
         ):
 
             candidate = lines[j]
@@ -733,7 +773,12 @@ def parse_result_lines(text):
 
             j -= 1
 
-        valid = []
+        # 直近から遡るため、
+        # previous[0] が施設名（部屋名）、
+        # previous[1] が館名になる構造を利用する。
+
+        facility = ""
+        building = ""
 
         for candidate in previous:
 
@@ -746,30 +791,69 @@ def parse_result_lines(text):
             if extract_time(candidate):
                 continue
 
+            # 時刻軸
             if re.fullmatch(
                 r"[\d\s\t]+",
                 candidate
             ):
                 continue
 
-            valid.append(candidate)
+            # ------------------------------------------------
+            # 実際の構造：
+            #
+            # 港南小学校
+            # 体育館全面（休日）
+            #
+            # なので最初に見つかったものが施設名、
+            # 2番目が館名。
+            # ------------------------------------------------
 
-        facility = ""
-        building = ""
+            if not facility:
+                facility = candidate
+                continue
 
-        if len(valid) >= 1:
-            facility = valid[0]
-
-        if len(valid) >= 2:
-            building = valid[1]
+            if not building:
+                building = facility
+                facility = candidate
+                break
 
         # ----------------------------------------------------
-        # 明らかな誤取得を除外
+        # 取得できなかった場合は無視
         # ----------------------------------------------------
 
-        if (
-            not facility
-            or facility in ignored
+        if not facility:
+            continue
+
+        # ----------------------------------------------------
+        # ヘッダー混入防止
+        # ----------------------------------------------------
+
+        if facility in ignored:
+            continue
+
+        if building in ignored:
+            continue
+
+        # ----------------------------------------------------
+        # 施設名にヘッダーが混ざった場合の除去
+        # ----------------------------------------------------
+
+        header_words = (
+            "館",
+            "施設",
+            "時間帯",
+            "予約",
+        )
+
+        if any(
+            word in facility
+            for word in header_words
+        ):
+            continue
+
+        if any(
+            word in building
+            for word in header_words
         ):
             continue
 
@@ -893,6 +977,7 @@ def search_district(page, district):
     # --------------------------------------------------------
 
     if not select_badminton(page):
+
         raise RuntimeError(
             "バドミントン選択に失敗"
         )
@@ -902,6 +987,7 @@ def search_district(page, district):
     # --------------------------------------------------------
 
     if not click_search(page):
+
         raise RuntimeError(
             "検索ボタンをクリックできませんでした"
         )
@@ -910,7 +996,6 @@ def search_district(page, district):
 
     # --------------------------------------------------------
     # 日付順
-    # ★ pageを正しく渡す
     # --------------------------------------------------------
 
     click_date_order(page)
@@ -1049,6 +1134,7 @@ def main():
                     print(
                         f"{district}: 検索エラー"
                     )
+
                     print(e)
 
                     safe_name = (
