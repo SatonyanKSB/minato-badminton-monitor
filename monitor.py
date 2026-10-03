@@ -136,13 +136,12 @@ def send_ntfy(message):
 
         url = f"https://ntfy.sh/{NTFY_TOPIC}"
 
-        # HTTPヘッダーには日本語・絵文字を入れない
-        # 本文はUTF-8で送信する
         request = urllib.request.Request(
             url,
             data=message.encode("utf-8"),
             method="POST",
             headers={
+                # HTTPヘッダーには日本語・絵文字を入れない
                 "Title": "Minato Badminton",
                 "Priority": "high",
                 "Tags": "badminton",
@@ -240,6 +239,7 @@ def select_district(page, district):
                     if not text:
                         continue
 
+                    # 完全一致
                     if text == district:
 
                         select.select_option(
@@ -252,6 +252,7 @@ def select_district(page, district):
 
                         return True
 
+                    # 「（すべて）」等の表記揺れ対応
                     normalized = (
                         text
                         .replace("（すべて）", "")
@@ -344,6 +345,7 @@ def select_badminton(page):
         except Exception:
             continue
 
+    # select以外も確認
     try:
 
         element = page.get_by_text(
@@ -659,9 +661,6 @@ def is_result_header(line):
 
     normalized = normalize_text(line)
 
-    # 実際のサイトでは
-    # 「館    施設    時間帯    予約」
-    # がタブ区切りで1行になっている。
     if (
         "館" in normalized
         and "施設" in normalized
@@ -753,15 +752,7 @@ def parse_result_lines(text):
 
         # ----------------------------------------------------
         # 時間帯の直前から
-        # 「館名」「施設名」を取得
-        #
-        # 実際のサイト：
-        #
-        # 館  施設  時間帯  予約
-        # 港南小学校
-        # 体育館全面（休日）
-        # 18時00分～21時00分
-        #
+        # 館名・施設名を取得
         # ----------------------------------------------------
 
         previous = []
@@ -775,16 +766,13 @@ def parse_result_lines(text):
 
             candidate = lines[j]
 
-            # 日付を越えたら終了
             if is_date_line(candidate):
                 break
 
-            # 結果ヘッダーは完全に除外
             if is_result_header(candidate):
                 j -= 1
                 continue
 
-            # その他の不要な表示
             if candidate in {
                 "すべて開く",
                 "すべて閉じる",
@@ -794,12 +782,10 @@ def parse_result_lines(text):
                 j -= 1
                 continue
 
-            # 時刻は除外
             if extract_time(candidate):
                 j -= 1
                 continue
 
-            # 数字だけの時刻軸などを除外
             if re.fullmatch(
                 r"[\d\s\t]+",
                 candidate
@@ -812,12 +798,14 @@ def parse_result_lines(text):
             j -= 1
 
         # ----------------------------------------------------
-        # 直前の2つが
+        # 実際のサイト構造
+        #
+        # 港南小学校
+        # 体育館全面（休日）
+        # 18時00分～21時00分
         #
         # previous[0] = 施設名
         # previous[1] = 館名
-        #
-        # なので逆にする。
         # ----------------------------------------------------
 
         facility = ""
@@ -829,10 +817,6 @@ def parse_result_lines(text):
         if len(previous) >= 2:
             building = previous[1]
 
-        # ----------------------------------------------------
-        # ヘッダー等が混入していないか確認
-        # ----------------------------------------------------
-
         if not facility:
             continue
 
@@ -841,10 +825,6 @@ def parse_result_lines(text):
 
         if is_result_header(building):
             continue
-
-        # ----------------------------------------------------
-        # 明らかに検索結果ではない文字を除外
-        # ----------------------------------------------------
 
         invalid_words = {
             "指定条件に合致した空き状況を表示しています。",
