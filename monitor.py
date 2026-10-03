@@ -509,6 +509,8 @@ def main():
     print("\n17:00以降開始の空き枠合計:", len(current_state), "件")
     print("今回新しく出現した空き枠:", len(new_rows), "件")
 
+    notification_ok = True
+
     if new_rows:
         message_lines = [
             "🏸 港区バドミントン空き情報",
@@ -521,11 +523,16 @@ def main():
         )
         message = "\n".join(message_lines)
 
-        send_discord(message)
+        notification_ok = send_discord(message)
+
+        if not notification_ok:
+            print("Discord通知に失敗したため、state.jsonは更新しません。")
+            print("次回実行でも同じ新規空き枠を再通知できるようにします。")
+            return
     else:
         print("新規空き枠がないためDiscord通知はしません。")
 
-    # 正常終了した場合だけstate更新
+    # Discord通知が成功した場合、または新規枠がない場合だけstate更新
     save_state(current_state)
 
     print("\n============================================================")
