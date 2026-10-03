@@ -34,7 +34,7 @@ jobs:
 
       - name: Run monitor
         env:
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
         run: |
           python monitor.py
 
