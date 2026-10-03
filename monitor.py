@@ -56,41 +56,47 @@ def save_state(state):
 
 
 # =========================================================
-# 時刻判定
+# 時刻
 # =========================================================
 
-def extract_start_time(time_text):
+def extract_time_ranges(text):
     """
-    例：
+    ページ内の時刻表記をすべて取得する。
+
+    対応例：
     17:00～19:00
-    18:00～21:00
-    から開始時刻を取得
+    18:00 ～ 21:00
+    17:00-19:00
+    17:00〜19:00
     """
 
-    m = re.search(
-        r"(\d{1,2}):(\d{2})\s*[～~\-−]\s*(\d{1,2}):(\d{2})",
-        time_text
+    pattern = (
+        r"(\d{1,2}:\d{2})"
+        r"\s*[～〜~\-−－]"
+        r"\s*"
+        r"(\d{1,2}:\d{2})"
+    )
+
+    return re.findall(pattern, text)
+
+
+def is_after_17(start_time):
+    m = re.match(
+        r"(\d{1,2}):(\d{2})",
+        start_time
     )
 
     if not m:
-        return None
-
-    return int(m.group(1)), int(m.group(2))
-
-
-def is_after_17(time_text):
-    result = extract_start_time(time_text)
-
-    if not result:
         return False
 
-    hour, minute = result
+    hour = int(m.group(1))
+    minute = int(m.group(2))
 
     return (hour, minute) >= (17, 0)
 
 
 # =========================================================
-# ntfy通知
+# ntfy
 # =========================================================
 
 def send_ntfy(message):
@@ -98,16 +104,14 @@ def send_ntfy(message):
     topic = os.environ.get("NTFY_TOPIC")
 
     if not topic:
-        print("NTFY_TOPICが設定されていないため通知できません。")
+        print("NTFY_TOPICが設定されていません。")
         return False
 
     url = f"https://ntfy.sh/{topic}"
 
-    payload = message.encode("utf-8")
-
     request = Request(
         url,
-        data=payload,
+        data=message.encode("utf-8"),
         headers={
             "Content-Type": "text/plain; charset=utf-8",
             "Title": "港区バドミントン空き枠",
@@ -141,14 +145,11 @@ def send_ntfy(message):
             )
 
             print(
-                f"ntfyのエラー本文: {body}"
+                f"ntfyエラー本文: {body}"
             )
 
-        except Exception as body_error:
-
-            print(
-                f"ntfyエラー本文取得失敗: {body_error}"
-            )
+        except Exception:
+            pass
 
         return False
 
@@ -167,25 +168,19 @@ def send_ntfy(message):
 
 def select_district(page, district):
 
-    print(f"地区選択を開始: {district}")
+    print(
+        f"地区選択を開始: {district}"
+    )
 
-    # 実際のサイトで表示される可能性がある表記
+    selects = page.locator("select")
+
     candidates = [
         district,
         district.replace("（すべて）", ""),
         district.replace("(すべて)", ""),
     ]
 
-    selects = page.locator("select")
-
-    print(
-        f"select要素数: {selects.count()}"
-    )
-
-    # -----------------------------------------------------
-    # まず完全一致
-    # -----------------------------------------------------
-
+    # 完全一致
     for i in range(selects.count()):
 
         select = selects.nth(i)
@@ -204,7 +199,9 @@ def select_district(page, district):
 
                     if text in candidates:
 
-                        value = option.get_attribute("value")
+                        value = option.get_attribute(
+                            "value"
+                        )
 
                         if value:
 
@@ -230,10 +227,7 @@ def select_district(page, district):
         except Exception:
             pass
 
-    # -----------------------------------------------------
     # 部分一致
-    # -----------------------------------------------------
-
     base_name = (
         district
         .replace("（すべて）", "")
@@ -257,9 +251,11 @@ def select_district(page, district):
 
                     text = option.inner_text().strip()
 
-                    if base_name and base_name in text:
+                    if base_name in text:
 
-                        value = option.get_attribute("value")
+                        value = option.get_attribute(
+                            "value"
+                        )
 
                         if value:
 
@@ -285,51 +281,22 @@ def select_district(page, district):
         except Exception:
             pass
 
-    # -----------------------------------------------------
-    # デバッグ
-    # -----------------------------------------------------
-
     print(
-        f"地区選択に失敗しました: {district}"
+        f"地区選択に失敗: {district}"
     )
-
-    print("現在ページに存在するselectの選択肢:")
-
-    for i in range(selects.count()):
-
-        try:
-
-            print(
-                f"--- select {i} ---"
-            )
-
-            options = selects.nth(i).locator("option")
-
-            for j in range(options.count()):
-
-                try:
-
-                    print(
-                        " ",
-                        options.nth(j).inner_text().strip()
-                    )
-
-                except Exception:
-                    pass
-
-        except Exception:
-            pass
 
     return False
 
 
 # =========================================================
-# バドミントン選択
+# バドミントン
 # =========================================================
 
 def select_badminton(page):
 
-    print("バドミントン選択を開始")
+    print(
+        "バドミントン選択を開始"
+    )
 
     selects = page.locator("select")
 
@@ -380,7 +347,7 @@ def select_badminton(page):
             pass
 
     print(
-        "バドミントンの選択肢が見つかりませんでした"
+        "バドミントン選択に失敗"
     )
 
     return False
@@ -415,66 +382,32 @@ def select_one_month(page):
             f"1か月選択エラー: {e}"
         )
 
-    print(
-        "1か月ボタンが見つかりません"
-    )
-
     return False
 
 
 # =========================================================
-# 検索ボタン
+# 検索
 # =========================================================
 
 def click_search(page):
 
-    # まず「検索」という文字を持つボタンを探す
-    candidates = [
-        page.get_by_text(
+    # まず「検索」という文字そのものを探す
+    try:
+
+        locator = page.get_by_text(
             "検索",
             exact=True
-        ),
-        page.locator(
-            "input[type='submit']"
-        ),
-        page.locator(
-            "input[type='button']"
-        ),
-        page.locator(
-            "button"
-        ),
-    ]
+        )
 
-    for locator in candidates:
+        if locator.count() > 0:
 
-        try:
-
-            count = locator.count()
-
-            for i in range(count):
+            for i in range(locator.count()):
 
                 item = locator.nth(i)
 
                 try:
 
-                    if not item.is_visible():
-                        continue
-
-                    text = (
-                        item.inner_text().strip()
-                        if item.evaluate(
-                            "(el) => el.tagName"
-                        ) != "INPUT"
-                        else (
-                            item.get_attribute("value")
-                            or ""
-                        )
-                    )
-
-                    if (
-                        "検索" in text
-                        or locator == candidates[0]
-                    ):
+                    if item.is_visible():
 
                         item.click()
 
@@ -487,8 +420,47 @@ def click_search(page):
                 except Exception:
                     pass
 
-        except Exception:
-            pass
+    except Exception:
+        pass
+
+    # input/buttonも確認
+    selectors = [
+        "input[type='submit']",
+        "input[type='button']",
+        "button",
+    ]
+
+    for selector in selectors:
+
+        locator = page.locator(selector)
+
+        for i in range(locator.count()):
+
+            item = locator.nth(i)
+
+            try:
+
+                if not item.is_visible():
+                    continue
+
+                text = (
+                    item.get_attribute("value")
+                    or item.inner_text()
+                    or ""
+                )
+
+                if "検索" in text:
+
+                    item.click()
+
+                    print(
+                        "検索ボタンをクリックしました"
+                    )
+
+                    return True
+
+            except Exception:
+                pass
 
     print(
         "検索ボタンが見つかりません"
@@ -514,7 +486,9 @@ def click_date_order(page):
 
             locator.first.click()
 
-            page.wait_for_timeout(1000)
+            page.wait_for_timeout(
+                1000
+            )
 
             print(
                 "日付順をクリックしました"
@@ -537,7 +511,7 @@ def click_date_order(page):
 
 def click_more(page):
 
-    total_clicks = 0
+    total = 0
 
     while True:
 
@@ -565,7 +539,7 @@ def click_more(page):
 
                             item.click()
 
-                            total_clicks += 1
+                            total += 1
 
                             clicked = True
 
@@ -588,122 +562,233 @@ def click_more(page):
             break
 
     print(
-        f"「さらに表示」クリック回数: {total_clicks}"
+        f"「さらに表示」クリック回数: {total}"
     )
 
 
 # =========================================================
-# 結果解析
+# 日付抽出
+# =========================================================
+
+def find_dates(text):
+
+    pattern = r"(\d{1,2})月(\d{1,2})日"
+
+    return re.findall(
+        pattern,
+        text
+    )
+
+
+# =========================================================
+# 結果抽出
 # =========================================================
 
 def extract_rows(page, district):
 
-    rows = []
+    print(
+        f"{district}: 検索結果の解析を開始"
+    )
 
-    body_text = page.locator(
+    body = page.locator(
         "body"
     ).inner_text()
 
-    lines = [
-        x.strip()
-        for x in body_text.splitlines()
-        if x.strip()
-    ]
-
-    current_date = ""
-
     # -----------------------------------------------------
-    # 日付を保持しながら結果を読む
+    # デバッグ用
     # -----------------------------------------------------
 
-    for i, line in enumerate(lines):
+    with open(
+        f"result_{district.replace('（すべて）', '').replace('(', '').replace(')', '')}.txt",
+        "w",
+        encoding="utf-8"
+    ) as f:
 
-        date_match = re.search(
-            r"(\d{1,2})月(\d{1,2})日",
-            line
+        f.write(body)
+
+    # -----------------------------------------------------
+    # 時刻をすべて探す
+    # -----------------------------------------------------
+
+    pattern = (
+        r"(\d{1,2}:\d{2})"
+        r"\s*[～〜~\-−－]"
+        r"\s*"
+        r"(\d{1,2}:\d{2})"
+    )
+
+    matches = list(
+        re.finditer(
+            pattern,
+            body
         )
+    )
 
-        if date_match:
+    print(
+        f"{district}: ページ内で見つかった時間枠: "
+        f"{len(matches)} 件"
+    )
 
-            current_date = (
-                f"{date_match.group(1)}月"
-                f"{date_match.group(2)}日"
-            )
+    rows = []
 
-        time_match = re.search(
-            r"(\d{1,2}:\d{2})"
-            r"\s*[～~\-−]"
-            r"\s*(\d{1,2}:\d{2})",
-            line
-        )
+    # -----------------------------------------------------
+    # 各時間枠を処理
+    # -----------------------------------------------------
 
-        if not time_match:
+    for match in matches:
+
+        start = match.group(1)
+        end = match.group(2)
+
+        # 17:00開始未満は対象外
+        if not is_after_17(start):
             continue
-
-        start = time_match.group(1)
-        end = time_match.group(2)
 
         time_text = (
             f"{start}～{end}"
         )
 
-        # 17:00開始未満は除外
-        if not is_after_17(time_text):
-            continue
+        # 時刻の前後500文字を取得
+        start_pos = max(
+            0,
+            match.start() - 500
+        )
 
-        # -------------------------------------------------
-        # 前後の行から施設・部屋情報を探す
-        # -------------------------------------------------
+        end_pos = min(
+            len(body),
+            match.end() + 500
+        )
 
-        nearby = lines[
-            max(0, i - 8):
-            min(len(lines), i + 8)
+        context = body[
+            start_pos:end_pos
         ]
+
+        context_lines = [
+            x.strip()
+            for x in context.splitlines()
+            if x.strip()
+        ]
+
+        # -------------------------------------------------
+        # 日付
+        # -------------------------------------------------
+
+        date_matches = list(
+            re.finditer(
+                r"(\d{1,2})月(\d{1,2})日",
+                context
+            )
+        )
+
+        date_text = ""
+
+        if date_matches:
+
+            dm = date_matches[-1]
+
+            date_text = (
+                f"{dm.group(1)}月"
+                f"{dm.group(2)}日"
+            )
+
+        # -------------------------------------------------
+        # 周辺から施設・部屋を探す
+        # -------------------------------------------------
 
         facility = ""
         room = ""
 
-        for candidate in nearby:
+        # 時刻を含む行を特定
+        time_line_index = None
 
-            if candidate == line:
-                continue
+        for index, line in enumerate(
+            context_lines
+        ):
 
-            if re.search(
-                r"\d{1,2}月\d{1,2}日",
-                candidate
+            if (
+                start in line
+                and end in line
             ):
-                continue
 
-            if re.search(
-                r"\d{1,2}:\d{2}",
-                candidate
-            ):
-                continue
-
-            if candidate in [
-                "空き",
-                "予約",
-                "○",
-                "×",
-                "日付順",
-                "施設ごと",
-            ]:
-                continue
-
-            # 長すぎるページ説明等を除外
-            if len(candidate) > 100:
-                continue
-
-            if not facility:
-                facility = candidate
-                continue
-
-            if not room:
-                room = candidate
+                time_line_index = index
                 break
 
+        if time_line_index is not None:
+
+            before = context_lines[
+                max(
+                    0,
+                    time_line_index - 8
+                ):
+                time_line_index
+            ]
+
+            # 後ろから見て候補を取得
+            candidates = list(
+                reversed(before)
+            )
+
+            for candidate in candidates:
+
+                if re.search(
+                    r"\d{1,2}月\d{1,2}日",
+                    candidate
+                ):
+                    continue
+
+                if re.search(
+                    r"\d{1,2}:\d{2}",
+                    candidate
+                ):
+                    continue
+
+                if candidate in [
+                    "空き",
+                    "予約",
+                    "○",
+                    "×",
+                    "日付順",
+                    "施設ごと",
+                ]:
+                    continue
+
+                if len(candidate) > 100:
+                    continue
+
+                if not facility:
+
+                    facility = candidate
+
+                elif not room:
+
+                    room = candidate
+                    break
+
+        # -------------------------------------------------
+        # 行全体からのフォールバック
+        # -------------------------------------------------
+
+        if not facility:
+
+            for line in context_lines:
+
+                if (
+                    "体育館" in line
+                    or "アリーナ" in line
+                    or "競技場" in line
+                    or "スポーツ" in line
+                ):
+
+                    facility = line
+
+                    break
+
+        # -------------------------------------------------
+        # レコード
+        # -------------------------------------------------
+
         row = {
-            "date": current_date,
+            "date": date_text,
             "district": district,
             "facility": facility,
             "room": room,
@@ -730,24 +815,34 @@ def extract_rows(page, district):
 
         unique[key] = row
 
-    return list(unique.values())
+    rows = list(
+        unique.values()
+    )
+
+    print(
+        f"{district}: 17:00開始以降 "
+        f"{len(rows)} 件を抽出"
+    )
+
+    return rows
 
 
 # =========================================================
-# 表示用
+# 表示
 # =========================================================
 
 def format_row(row):
 
+    values = [
+        row["date"],
+        row["district"],
+        row["facility"],
+        row["room"],
+        row["time"],
+    ]
+
     return " ".join(
-        x
-        for x in [
-            row["date"],
-            row["district"],
-            row["facility"],
-            row["room"],
-            row["time"],
-        ]
+        x for x in values
         if x
     )
 
@@ -762,7 +857,7 @@ def main():
 
     all_rows = []
 
-    successful_districts = 0
+    successful = 0
 
     with sync_playwright() as p:
 
@@ -792,16 +887,18 @@ def main():
                 try:
 
                     # -------------------------------------------------
-                    # ページを開く
+                    # トップページ
                     # -------------------------------------------------
 
                     page.goto(
                         URL,
                         wait_until="domcontentloaded",
-                        timeout=60000,
+                        timeout=60000
                     )
 
-                    page.wait_for_timeout(2000)
+                    page.wait_for_timeout(
+                        2000
+                    )
 
                     # -------------------------------------------------
                     # 1か月
@@ -809,7 +906,9 @@ def main():
 
                     select_one_month(page)
 
-                    page.wait_for_timeout(500)
+                    page.wait_for_timeout(
+                        500
+                    )
 
                     # -------------------------------------------------
                     # 時間帯は選択しない
@@ -832,7 +931,9 @@ def main():
                             "地区選択失敗"
                         )
 
-                    page.wait_for_timeout(500)
+                    page.wait_for_timeout(
+                        500
+                    )
 
                     # -------------------------------------------------
                     # バドミントン
@@ -846,7 +947,9 @@ def main():
                             "バドミントン選択失敗"
                         )
 
-                    page.wait_for_timeout(500)
+                    page.wait_for_timeout(
+                        500
+                    )
 
                     # -------------------------------------------------
                     # 検索
@@ -858,7 +961,9 @@ def main():
                             "検索ボタン失敗"
                         )
 
-                    page.wait_for_timeout(3000)
+                    page.wait_for_timeout(
+                        3000
+                    )
 
                     # -------------------------------------------------
                     # 日付順
@@ -866,7 +971,9 @@ def main():
 
                     click_date_order(page)
 
-                    page.wait_for_timeout(1000)
+                    page.wait_for_timeout(
+                        1000
+                    )
 
                     # -------------------------------------------------
                     # さらに表示
@@ -874,7 +981,9 @@ def main():
 
                     click_more(page)
 
-                    page.wait_for_timeout(1000)
+                    page.wait_for_timeout(
+                        1000
+                    )
 
                     # -------------------------------------------------
                     # 結果抽出
@@ -891,9 +1000,11 @@ def main():
                         f"{len(rows)} 件"
                     )
 
-                    all_rows.extend(rows)
+                    all_rows.extend(
+                        rows
+                    )
 
-                    successful_districts += 1
+                    successful += 1
 
                 except Exception as e:
 
@@ -906,9 +1017,9 @@ def main():
                         page.screenshot(
                             path=(
                                 f"error_"
-                                f"{successful_districts}.png"
+                                f"{successful}.png"
                             ),
-                            full_page=True,
+                            full_page=True
                         )
 
                     except Exception:
@@ -928,10 +1039,10 @@ def main():
                 pass
 
     # =====================================================
-    # 全地区検索成功確認
+    # 全地区成功確認
     # =====================================================
 
-    if successful_districts != len(DISTRICTS):
+    if successful != len(DISTRICTS):
 
         print(
             "全地区の検索が完了していないため、"
@@ -941,7 +1052,7 @@ def main():
         return
 
     # =====================================================
-    # 全体の重複削除
+    # 重複削除
     # =====================================================
 
     unique_rows = {}
@@ -963,7 +1074,7 @@ def main():
     )
 
     # =====================================================
-    # evening-results.txt
+    # 結果保存
     # =====================================================
 
     with open(
@@ -999,7 +1110,7 @@ def main():
             )
 
     # =====================================================
-    # 現在の状態
+    # 現在のstate
     # =====================================================
 
     current_state = set()
@@ -1081,7 +1192,7 @@ def main():
         return
 
     # =====================================================
-    # 通知本文
+    # ntfy通知
     # =====================================================
 
     message_lines = [
@@ -1111,10 +1222,6 @@ def main():
         "========================"
     )
 
-    # =====================================================
-    # ntfy送信
-    # =====================================================
-
     notification_ok = send_ntfy(
         message
     )
@@ -1125,21 +1232,19 @@ def main():
 
     if not notification_ok:
 
-        print("")
         print(
             "ntfy通知に失敗したため、"
             "state.jsonは更新しません。"
         )
 
         print(
-            "次回実行でも同じ空き枠を"
-            "再通知できるようにします。"
+            "次回実行でも再通知します。"
         )
 
         return
 
     # =====================================================
-    # 通知成功後のみstate更新
+    # 通知成功
     # =====================================================
 
     save_state(
