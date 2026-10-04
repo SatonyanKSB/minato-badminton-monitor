@@ -3,10 +3,6 @@ name: Minato Badminton Monitor
 on:
   workflow_dispatch:
 
-  schedule:
-    - cron: "2-59/10 * * * *"
-      timezone: "Asia/Tokyo"
-
 permissions:
   contents: write
 
